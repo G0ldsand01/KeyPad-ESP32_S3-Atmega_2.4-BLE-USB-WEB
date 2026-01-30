@@ -1,0 +1,817 @@
+/*
+ * ATmega328P Light Sensor & LED Controller with ST7789 Display
+ * 
+ * Fonctionnalités:
+ * - Lecture du capteur TEMT6000 (luminosité ambiante)
+ * - Communication UART avec ESP32 (115200 bauds)
+ * - Contrôle PWM de la LED de backlight
+ * - Affichage sur écran ST7789 TFT (SPI)
+ * 
+ * Pins:
+ * - TEMT6000: ADC0 (PC0, Pin 23)
+ * - LED Backlight: OC0B (PD5, Pin 19) - PWM
+ * - UART RX: PD0 (Pin 2) - Reçoit de l'ESP32
+ * - UART TX: PD1 (Pin 3) - Envoie à l'ESP32
+ * - ST7789 MOSI: PB3 (Pin 17) - SPI Data
+ * - ST7789 SCK: PB5 (Pin 19) - SPI Clock
+ * - ST7789 CS: PB2 (Pin 16) - Chip Select
+ * - ST7789 DC: PB1 (Pin 15) - Data/Command
+ * - ST7789 RST: PB0 (Pin 14) - Reset (optionnel, peut être connecté à VCC)
+ */ 
+
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
+#include <string.h>
+
+// Configuration UART
+#define UART_BAUD 115200
+#define UART_UBRR (F_CPU / 16 / UART_BAUD - 1)
+// F_CPU devrait être défini dans les options du projet (Project Properties > Toolchain > AVR/GNU C++ Compiler > Symbols)
+// Si ce n'est pas le cas, décommentez la ligne suivante :
+// #define F_CPU 16000000UL
+
+// Protocole UART
+// Format: [CMD] [DATA...] [\n]
+#define CMD_READ_LIGHT 0x01  // Lire la luminosité
+#define CMD_SET_LED 0x02     // Définir la luminosité LED (0-255)
+#define CMD_GET_LED 0x03     // Obtenir la luminosité LED actuelle
+#define CMD_UPDATE_DISPLAY 0x04  // Mettre à jour l'affichage ST7789
+#define CMD_SET_DISPLAY_DATA 0x05  // Envoyer les données d'affichage (profil, mode, etc.)
+#define CMD_SET_DISPLAY_IMAGE 0x08  // Commencer la réception d'une image RGB565
+#define CMD_SET_DISPLAY_IMAGE_CHUNK 0x09  // Recevoir un chunk d'image
+#define CMD_SET_ATMEGA_DEBUG 0x0A  // Activer/désactiver le debug UART sur l'ATmega
+#define CMD_SET_ATMEGA_LOG_LEVEL 0x0B  // Définir le niveau de log de l'ATmega
+
+// Configuration ST7789
+#define ST7789_WIDTH 240
+#define ST7789_HEIGHT 320
+#define ST7789_CS_PORT PORTB
+#define ST7789_CS_DDR DDRB
+#define ST7789_CS_PIN PB2
+#define ST7789_DC_PORT PORTB
+#define ST7789_DC_DDR DDRB
+#define ST7789_DC_PIN PB1
+#define ST7789_RST_PORT PORTB
+#define ST7789_RST_DDR DDRB
+#define ST7789_RST_PIN PB0
+
+// Commandes ST7789
+#define ST7789_NOP 0x00
+#define ST7789_SWRESET 0x01
+#define ST7789_SLPOUT 0x11
+#define ST7789_DISPOFF 0x28
+#define ST7789_DISPON 0x29
+#define ST7789_CASET 0x2A
+#define ST7789_RASET 0x2B
+#define ST7789_RAMWR 0x2C
+#define ST7789_MADCTL 0x36
+#define ST7789_COLMOD 0x3A
+#define ST7789_INVON 0x21
+#define ST7789_INVOFF 0x20
+
+// Variables globales UART
+#define UART_BUFFER_SIZE 256
+volatile uint8_t uart_buffer[UART_BUFFER_SIZE];  // Buffer pour recevoir les commandes
+volatile uint8_t uart_buffer_index = 0;
+volatile uint8_t uart_command = 0;
+volatile uint8_t led_brightness = 0;  // 0-255
+volatile uint16_t light_level = 0;    // Valeur ADC du TEMT6000 (0-1023)
+
+// Variables pour la réception d'images
+#define IMAGE_CHUNK_SIZE 64  // Taille des chunks pour transmission UART (plus grand que I2C)
+volatile uint16_t image_expected_size = 0;  // Taille totale de l'image attendue
+volatile uint16_t image_received_bytes = 0;  // Nombre de bytes reçus
+volatile uint16_t image_chunk_index = 0;  // Index du chunk en cours
+volatile uint8_t image_receiving = 0;  // Flag: 1 si on reçoit une image
+volatile uint8_t image_chunk_buffer[IMAGE_CHUNK_SIZE];  // Buffer pour stocker temporairement un chunk
+volatile uint8_t image_chunk_buffer_index = 0;
+// Note: On dessine directement sur l'écran au lieu d'utiliser un buffer (trop grand pour RAM)
+
+// Variables pour les données d'affichage
+#define DISPLAY_DATA_BUFFER_SIZE 64
+volatile char display_mode[16] = "data";
+volatile char display_profile[32] = "Profile 1";
+volatile char display_output_mode[16] = "usb";
+volatile uint8_t display_keys_count = 0;
+volatile uint8_t display_backlight_enabled = 0;
+volatile uint8_t display_backlight_brightness = 0;
+volatile char display_custom1[32] = "";
+volatile char display_custom2[32] = "";
+volatile uint8_t display_brightness = 128;
+volatile uint8_t display_data_receiving = 0;
+volatile uint8_t display_data_buffer_index = 0;
+
+// Variables pour le debug et logging
+volatile uint8_t debug_enabled = 0;  // 0 = désactivé, 1 = activé
+volatile uint8_t log_level = 2;  // 0 = none, 1 = error, 2 = info, 3 = debug
+
+// Debug: Utiliser UART pour les messages de débogage (optionnel)
+// Note: Nécessite un convertisseur USB-UART pour voir les messages
+// #define DEBUG_UART
+#ifdef DEBUG_UART
+#include <avr/io.h>
+#define DEBUG_BAUD 9600
+#define DEBUG_UBRR (F_CPU / 16 / DEBUG_BAUD - 1)
+void debug_init(void) {
+    UBRR0H = (uint8_t)(DEBUG_UBRR >> 8);
+    UBRR0L = (uint8_t)DEBUG_UBRR;
+    UCSR0B = (1 << TXEN0);  // Enable transmitter
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);  // 8 data bits
+}
+void debug_print(const char* str) {
+    while (*str) {
+        while (!(UCSR0A & (1 << UDRE0)));  // Wait for empty transmit buffer
+        UDR0 = *str++;
+    }
+}
+void debug_print_hex(uint8_t val) {
+    char hex[] = "0123456789ABCDEF";
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = hex[(val >> 4) & 0x0F];
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = hex[val & 0x0F];
+}
+void debug_print_dec(uint16_t val) {
+    char buf[6];
+    uint8_t i = 0;
+    if (val == 0) {
+        debug_print("0");
+        return;
+    }
+    while (val > 0 && i < 5) {
+        buf[i++] = '0' + (val % 10);
+        val /= 10;
+    }
+    while (i > 0) {
+        while (!(UCSR0A & (1 << UDRE0)));
+        UDR0 = buf[--i];
+    }
+}
+#else
+#define debug_init()
+#define debug_print(x)
+#define debug_print_hex(x)
+#define debug_print_dec(x)
+#endif
+
+// Macros conditionnelles pour le debug selon le niveau
+#define LOG_ERROR(x) do { if (debug_enabled && log_level >= 1) debug_print(x); } while(0)
+#define LOG_INFO(x) do { if (debug_enabled && log_level >= 2) debug_print(x); } while(0)
+#define LOG_DEBUG(x) do { if (debug_enabled && log_level >= 3) debug_print(x); } while(0)
+
+// Prototypes de fonctions ST7789
+void st7789_write_cmd(uint8_t cmd);
+void st7789_write_data(uint8_t data);
+void st7789_init(void);
+void st7789_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+void st7789_fill_screen(uint16_t color);
+void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color);
+void st7789_draw_image_rgb565(uint8_t* imageData, uint16_t imageSize);
+void st7789_update_display(void);
+void processUartCommand(void);
+void uart_send_byte(uint8_t data);
+void uart_send_response(uint8_t cmd, uint8_t* data, uint8_t len);
+
+// Initialiser ADC pour TEMT6000
+void adc_init(void) {
+    // ADC0 (PC0) comme entrée analogique
+    ADMUX = (1 << REFS0);  // Référence AVCC (5V)
+    ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);  // Prescaler 128
+}
+
+// Lire la valeur ADC du TEMT6000
+uint16_t adc_read(void) {
+    ADCSRA |= (1 << ADSC);  // Démarrer conversion
+    while (ADCSRA & (1 << ADSC));  // Attendre fin conversion
+    return ADC;
+}
+
+// Initialiser PWM pour LED (Timer0, OC0B sur PD5)
+void pwm_init(void) {
+    // Mode PWM Phase Correct, Top = 0xFF
+    TCCR0A = (1 << WGM00) | (1 << COM0B1);  // PWM Phase Correct, OC0B non-inversé
+    TCCR0B = (1 << CS00);  // Prescaler 1 (pas de division)
+    
+    // PD5 (OC0B) comme sortie
+    DDRD |= (1 << PD5);
+    
+    OCR0B = 0;  // LED éteinte par défaut
+}
+
+// Définir la luminosité LED (0-255)
+void set_led_brightness(uint8_t brightness) {
+    led_brightness = brightness;
+    OCR0B = brightness;  // PWM duty cycle
+}
+
+// Initialiser SPI pour ST7789
+void spi_init(void) {
+    // Configurer SPI en mode maître, vitesse F_CPU/4
+    SPCR = (1 << SPE) | (1 << MSTR);  // SPI Enable, Master mode
+    SPSR = (1 << SPI2X);  // Double speed
+    
+    // Pins SPI
+    DDRB |= (1 << PB3) | (1 << PB5);  // MOSI et SCK en sortie
+    DDRB &= ~(1 << PB4);  // MISO en entrée
+    
+    // Pins de contrôle ST7789
+    ST7789_CS_DDR |= (1 << ST7789_CS_PIN);
+    ST7789_DC_DDR |= (1 << ST7789_DC_PIN);
+    ST7789_RST_DDR |= (1 << ST7789_RST_PIN);
+    
+    // CS et RST HIGH par défaut
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+    ST7789_RST_PORT |= (1 << ST7789_RST_PIN);
+}
+
+// Envoyer un byte via SPI
+void spi_write(uint8_t data) {
+    SPDR = data;
+    while (!(SPSR & (1 << SPIF)));
+}
+
+// Envoyer une commande au ST7789
+void st7789_write_cmd(uint8_t cmd) {
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);  // CS LOW
+    ST7789_DC_PORT &= ~(1 << ST7789_DC_PIN);  // DC LOW (command)
+    spi_write(cmd);
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);   // CS HIGH
+}
+
+// Envoyer des données au ST7789
+void st7789_write_data(uint8_t data) {
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);  // CS LOW
+    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);    // DC HIGH (data)
+    spi_write(data);
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);   // CS HIGH
+}
+
+// Envoyer plusieurs bytes de données
+void st7789_write_data_multiple(uint8_t* data, uint16_t len) {
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);  // CS LOW
+    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);    // DC HIGH (data)
+    for (uint16_t i = 0; i < len; i++) {
+        spi_write(data[i]);
+    }
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);   // CS HIGH
+}
+
+// Initialiser le ST7789
+void st7789_init(void) {
+    // Reset hardware
+    ST7789_RST_PORT &= ~(1 << ST7789_RST_PIN);
+    _delay_ms(20);
+    ST7789_RST_PORT |= (1 << ST7789_RST_PIN);
+    _delay_ms(20);
+    
+    // Software reset
+    st7789_write_cmd(ST7789_SWRESET);
+    _delay_ms(150);
+    
+    // Sortir du mode sleep
+    st7789_write_cmd(ST7789_SLPOUT);
+    _delay_ms(150);
+    
+    // Configuration couleur (RGB565)
+    st7789_write_cmd(ST7789_COLMOD);
+    st7789_write_data(0x55);  // 16-bit color (RGB565)
+    _delay_ms(10);
+    
+    // Memory access control (orientation)
+    // Pour un écran 1.9" 240x320, on peut essayer différentes orientations
+    st7789_write_cmd(ST7789_MADCTL);
+    // 0x00 = Normal (portrait, RGB order)
+    // 0x08 = Mirror Y
+    // 0x40 = Mirror X
+    // 0x20 = Mirror X+Y
+    // 0x60 = 90° rotation (landscape)
+    // 0xC0 = 180° rotation
+    // 0xA0 = 270° rotation
+    st7789_write_data(0x00);  // Normal orientation (portrait)
+    _delay_ms(10);
+    
+    // Inversion des couleurs - ESSENTIEL pour certains écrans ST7789
+    // Certains écrans nécessitent INVON, d'autres INVOFF
+    st7789_write_cmd(ST7789_INVON);  // Inverser les couleurs
+    _delay_ms(10);
+    
+    // Activer l'affichage
+    st7789_write_cmd(ST7789_DISPON);
+    _delay_ms(20);
+    
+    // Effacer l'écran avec un fond sombre immédiatement
+    // Utiliser un gris foncé au lieu de noir pour éviter les artefacts blancs
+    st7789_fill_screen(0x1082);  // Gris foncé RGB565
+    _delay_ms(50);
+    
+    debug_print("ST7789 initialized\r\n");
+}
+
+// Définir la fenêtre d'affichage
+void st7789_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    st7789_write_cmd(ST7789_CASET);
+    st7789_write_data(x0 >> 8);
+    st7789_write_data(x0 & 0xFF);
+    st7789_write_data(x1 >> 8);
+    st7789_write_data(x1 & 0xFF);
+    
+    st7789_write_cmd(ST7789_RASET);
+    st7789_write_data(y0 >> 8);
+    st7789_write_data(y0 & 0xFF);
+    st7789_write_data(y1 >> 8);
+    st7789_write_data(y1 & 0xFF);
+    
+    st7789_write_cmd(ST7789_RAMWR);
+}
+
+// Effacer l'écran avec une couleur
+void st7789_fill_screen(uint16_t color) {
+    st7789_set_window(0, 0, ST7789_WIDTH - 1, ST7789_HEIGHT - 1);
+    
+    uint8_t color_high = (color >> 8) & 0xFF;
+    uint8_t color_low = color & 0xFF;
+    
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
+    
+    // Dessiner pixel par pixel pour éviter l'overflow
+    // 240*320 = 76800 pixels (dépasse uint16_t max 65535)
+    // On utilise deux boucles imbriquées
+    for (uint16_t y = 0; y < ST7789_HEIGHT; y++) {
+        for (uint16_t x = 0; x < ST7789_WIDTH; x++) {
+            spi_write(color_high);
+            spi_write(color_low);
+        }
+    }
+    
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+}
+
+// Dessiner un rectangle rempli
+void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {
+    if (x + w > ST7789_WIDTH) w = ST7789_WIDTH - x;
+    if (y + h > ST7789_HEIGHT) h = ST7789_HEIGHT - y;
+    
+    st7789_set_window(x, y, x + w - 1, y + h - 1);
+    
+    uint8_t color_high = (color >> 8) & 0xFF;
+    uint8_t color_low = color & 0xFF;
+    
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
+    
+    for (uint16_t i = 0; i < w * h; i++) {
+        spi_write(color_high);
+        spi_write(color_low);
+    }
+    
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+}
+
+// Dessiner une image RGB565 complète (240x320)
+void st7789_draw_image_rgb565(uint8_t* imageData, uint16_t imageSize) {
+    // Vérifier que la taille est correcte (240x320x2 = 153600)
+    if (imageSize != (ST7789_WIDTH * ST7789_HEIGHT * 2)) {
+        return;  // Taille invalide
+    }
+    
+    // Définir la fenêtre pour tout l'écran
+    st7789_set_window(0, 0, ST7789_WIDTH - 1, ST7789_HEIGHT - 1);
+    
+    // Envoyer les données pixel par pixel
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
+    
+    // Envoyer les données RGB565 (2 bytes par pixel)
+    for (uint16_t i = 0; i < imageSize; i++) {
+        spi_write(imageData[i]);
+    }
+    
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+}
+
+// Dessiner une barre de progression horizontale
+void st7789_draw_progress_bar(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t value, uint16_t max_value, uint16_t bg_color, uint16_t fg_color) {
+    // Fond de la barre
+    st7789_fill_rect(x, y, w, h, bg_color);
+    
+    // Calculer la largeur remplie
+    uint16_t filled_width = (uint32_t)w * value / max_value;
+    if (filled_width > w) filled_width = w;
+    
+    // Partie remplie
+    if (filled_width > 0) {
+        st7789_fill_rect(x, y, filled_width, h, fg_color);
+    }
+}
+
+// Fonction simple pour dessiner un rectangle de texte (simulation)
+// Note: Pour un vrai affichage de texte, il faudrait une bibliothèque de fonts bitmap
+// Pour l'instant, on affiche des rectangles colorés avec des informations visuelles
+
+// Mettre à jour l'affichage avec les informations réelles
+void st7789_update_display(void) {
+    // Si on est en mode image ou gif, ne pas écraser l'image
+    if (strcmp((char*)display_mode, "image") == 0 || strcmp((char*)display_mode, "gif") == 0) {
+        return;  // L'image est déjà affichée, ne pas l'écraser
+    }
+    
+    // Effacer l'écran avec un fond sombre (gris foncé au lieu de noir pour meilleur contraste)
+    uint16_t bg_color = 0x1082;  // Gris foncé RGB565
+    st7789_fill_screen(bg_color);
+    
+    // Couleurs RGB565
+    uint16_t color_white = 0xFFFF;
+    uint16_t color_green = 0x07E0;
+    uint16_t color_blue = 0x001F;
+    uint16_t color_red = 0xF800;
+    uint16_t color_yellow = 0xFFE0;
+    uint16_t color_cyan = 0x07FF;
+    uint16_t color_magenta = 0xF81F;
+    uint16_t color_gray = 0x8410;
+    uint16_t color_dark_gray = 0x4208;
+    uint16_t color_light_gray = 0xC618;
+    
+    // Vérifier le mode d'affichage
+    // Si mode = "image" ou "gif", ne rien faire (l'image est déjà affichée)
+    // On vérifie seulement si on est en mode "data"
+    
+    // En-tête avec nom du profil (en haut)
+    uint16_t header_y = 5;
+    uint16_t header_height = 35;
+    st7789_fill_rect(5, header_y, 230, header_height, color_dark_gray);
+    // Bordure en bas de l'en-tête
+    st7789_fill_rect(5, header_y + header_height - 2, 230, 2, color_blue);
+    
+    // Indicateur de mode (petit rectangle coloré à gauche)
+    uint16_t mode_indicator_color = color_green;
+    if (strcmp((char*)display_mode, "image") == 0) mode_indicator_color = color_yellow;
+    else if (strcmp((char*)display_mode, "gif") == 0) mode_indicator_color = color_magenta;
+    st7789_fill_rect(8, header_y + 8, 8, 20, mode_indicator_color);
+    
+    // Zone d'information principale (milieu)
+    uint16_t info_y = header_y + header_height + 5;
+    uint16_t info_height = 200;
+    
+    // Fond de la zone d'information
+    st7789_fill_rect(5, info_y, 230, info_height, color_dark_gray);
+    
+    // Ligne 1: Mode de sortie (USB/BLE)
+    uint16_t line1_y = info_y + 10;
+    uint16_t output_color = color_cyan;
+    if (strcmp((char*)display_output_mode, "usb") == 0) output_color = color_green;
+    else if (strcmp((char*)display_output_mode, "bluetooth") == 0) output_color = color_blue;
+    st7789_fill_rect(10, line1_y, 100, 20, output_color);
+    
+    // Ligne 2: Nombre de touches configurées
+    uint16_t line2_y = line1_y + 30;
+    uint16_t keys_bar_width = (display_keys_count * 200) / 20;  // 20 touches max
+    if (keys_bar_width > 200) keys_bar_width = 200;
+    st7789_fill_rect(10, line2_y, 200, 20, color_gray);
+    if (keys_bar_width > 0) {
+        st7789_fill_rect(10, line2_y, keys_bar_width, 20, color_green);
+    }
+    
+    // Ligne 3: Backlight status
+    uint16_t line3_y = line2_y + 30;
+    uint16_t backlight_color = display_backlight_enabled ? color_yellow : color_dark_gray;
+    uint16_t backlight_width = (display_backlight_brightness * 200) / 255;
+    if (backlight_width > 200) backlight_width = 200;
+    st7789_fill_rect(10, line3_y, 200, 20, color_gray);
+    if (backlight_width > 0) {
+        st7789_fill_rect(10, line3_y, backlight_width, 20, backlight_color);
+    }
+    
+    // Ligne 4: Luminosité ambiante
+    uint16_t line4_y = line3_y + 30;
+    uint16_t light_color = color_green;
+    if (light_level < 300) light_color = color_red;
+    else if (light_level < 700) light_color = color_yellow;
+    uint16_t light_width = (light_level * 200) / 1023;
+    if (light_width > 200) light_width = 200;
+    st7789_fill_rect(10, line4_y, 200, 20, color_gray);
+    if (light_width > 0) {
+        st7789_fill_rect(10, line4_y, light_width, 20, light_color);
+    }
+    
+    // Ligne 5: LED Backlight status
+    uint16_t line5_y = line4_y + 30;
+    uint16_t led_width = (led_brightness * 200) / 255;
+    if (led_width > 200) led_width = 200;
+    st7789_fill_rect(10, line5_y, 200, 20, color_gray);
+    if (led_width > 0) {
+        st7789_fill_rect(10, line5_y, led_width, 20, color_blue);
+    }
+    
+    // Ligne 6: Indicateur de statut (carré coloré)
+    uint16_t line6_y = line5_y + 30;
+    uint16_t status_color = color_green;  // Vert = OK
+    st7789_fill_rect(10, line6_y, 30, 30, status_color);
+    
+    // Pied de page (en bas)
+    uint16_t footer_y = ST7789_HEIGHT - 25;
+    st7789_fill_rect(5, footer_y, 230, 20, color_dark_gray);
+    // Bordure en haut du pied de page
+    st7789_fill_rect(5, footer_y, 230, 2, color_blue);
+}
+
+// Initialiser UART
+void uart_init(void) {
+    // Calculer UBRR pour le baud rate
+    uint16_t ubrr = (F_CPU / 16 / UART_BAUD) - 1;
+    UBRR0H = (uint8_t)(ubrr >> 8);
+    UBRR0L = (uint8_t)(ubrr & 0xFF);
+    
+    // Activer réception et transmission, interruptions de réception
+    UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0);
+    
+    // Format: 8 bits de données, 1 bit de stop, pas de parité
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+}
+
+int main(void) {
+    // Initialiser le débogage UART (si activé)
+    debug_init();
+    debug_print("\r\n=== ATmega328P Light Controller ===\r\n");
+    debug_print("UART Baud: 115200\r\n");
+    
+    // Initialiser les périphériques
+    adc_init();
+    debug_print("ADC initialized\r\n");
+    
+    pwm_init();
+    debug_print("PWM initialized\r\n");
+    
+    spi_init();
+    debug_print("SPI initialized\r\n");
+    
+    st7789_init();
+    debug_print("ST7789 initialized\r\n");
+    
+    // Initialiser les valeurs d'affichage par défaut
+    strcpy((char*)display_mode, "data");
+    strcpy((char*)display_profile, "Profile 1");
+    strcpy((char*)display_output_mode, "usb");
+    display_keys_count = 0;
+    display_backlight_enabled = 0;
+    display_backlight_brightness = 0;
+    display_brightness = 128;
+    
+    // Afficher les informations initiales
+    _delay_ms(100);
+    st7789_u pdate_display();  // Afficher les informations initiales
+    
+    uart_init();
+    debug_print("UART initialized\r\n");
+    
+    // Activer interruptions globales
+    sei();
+    debug_print("Interrupts enabled\r\n");
+    debug_print("Ready!\r\n");
+    
+    // Boucle principale
+    while (1) {
+        // Lire la luminosité toutes les 100ms
+        uint16_t new_light = adc_read();
+        if (new_light != light_level) {
+            light_level = new_light;
+            debug_print("[LIGHT] Level: ");
+            debug_print_dec(light_level);
+            debug_print(" (0x");
+            debug_print_hex((uint8_t)(light_level >> 8));
+            debug_print_hex((uint8_t)(light_level & 0xFF));
+            debug_print(")\r\n");
+            
+            // Mettre à jour l'affichage quand la luminosité change
+            st7789_update_display();
+        }
+        
+        // Mettre à jour l'affichage périodiquement (toutes les secondes)
+        // Note: millis() n'existe pas sur AVR, utiliser un compteur
+        static uint16_t update_counter = 0;
+        update_counter++;
+        if (update_counter >= 10) {  // ~1 seconde (100ms * 10)
+            update_counter = 0;
+            st7789_update_display();
+        }
+        
+        // Petit délai pour éviter de surcharger l'ADC
+        _delay_ms(100);
+    }
+    
+    return 0;
+}
+
+// Fonction pour envoyer une réponse via UART
+void uart_send_byte(uint8_t data) {
+    while (!(UCSR0A & (1 << UDRE0)));  // Attendre que le buffer de transmission soit vide
+    UDR0 = data;
+}
+
+void uart_send_response(uint8_t cmd, uint8_t* data, uint8_t len) {
+    // Envoyer la commande
+    uart_send_byte(cmd);
+    // Envoyer les données
+    for (uint8_t i = 0; i < len; i++) {
+        uart_send_byte(data[i]);
+    }
+    uart_send_byte('\n');
+}
+
+// Traiter une commande UART complète
+void processUartCommand() {
+    if (uart_buffer_index < 1) return;
+    
+    uart_command = uart_buffer[0];
+    
+    LOG_DEBUG("[UART] Command received: 0x");
+    debug_print_hex(uart_command);
+    debug_print("\r\n");
+    
+    switch (uart_command) {
+        case CMD_READ_LIGHT:
+            // Envoyer la luminosité (2 bytes, little-endian)
+            {
+                uint8_t response[2] = {(uint8_t)(light_level & 0xFF), (uint8_t)((light_level >> 8) & 0xFF)};
+                uart_send_response(CMD_READ_LIGHT, response, 2);
+            }
+            break;
+            
+        case CMD_GET_LED:
+            // Envoyer la luminosité LED
+            {
+                uint8_t response[1] = {led_brightness};
+                uart_send_response(CMD_GET_LED, response, 1);
+            }
+            break;
+            
+        case CMD_SET_LED:
+            if (uart_buffer_index >= 2) {
+                uint8_t brightness = uart_buffer[1];
+                LOG_INFO("[UART] Setting LED brightness: ");
+                debug_print_dec(brightness);
+                debug_print("\r\n");
+                set_led_brightness(brightness);
+                st7789_update_display();
+            }
+            break;
+            
+        case CMD_UPDATE_DISPLAY:
+            st7789_update_display();
+            break;
+            
+        case CMD_SET_DISPLAY_DATA:
+            // Parser les données d'affichage
+            if (uart_buffer_index > 1) {
+                uint8_t pos = 1;
+                if (pos < uart_buffer_index) {
+                    display_brightness = uart_buffer[pos++];
+                }
+                // Mode
+                if (pos < uart_buffer_index) {
+                    uint8_t mode_len = uart_buffer[pos++];
+                    if (mode_len < 16 && pos + mode_len < uart_buffer_index) {
+                        memcpy(display_mode, &uart_buffer[pos], mode_len);
+                        display_mode[mode_len] = '\0';
+                        pos += mode_len;
+                    }
+                }
+                // Profile
+                if (pos < uart_buffer_index) {
+                    uint8_t profile_len = uart_buffer[pos++];
+                    if (profile_len < 32 && pos + profile_len < uart_buffer_index) {
+                        memcpy(display_profile, &uart_buffer[pos], profile_len);
+                        display_profile[profile_len] = '\0';
+                        pos += profile_len;
+                    }
+                }
+                // Output mode
+                if (pos < uart_buffer_index) {
+                    uint8_t output_len = uart_buffer[pos++];
+                    if (output_len < 16 && pos + output_len < uart_buffer_index) {
+                        memcpy(display_output_mode, &uart_buffer[pos], output_len);
+                        display_output_mode[output_len] = '\0';
+                        pos += output_len;
+                    }
+                }
+                // Keys count
+                if (pos < uart_buffer_index) {
+                    display_keys_count = uart_buffer[pos++];
+                }
+                // Backlight enabled
+                if (pos < uart_buffer_index) {
+                    display_backlight_enabled = uart_buffer[pos++];
+                }
+                // Backlight brightness
+                if (pos < uart_buffer_index) {
+                    display_backlight_brightness = uart_buffer[pos];
+                }
+                
+                st7789_update_display();
+            }
+            break;
+            
+        case CMD_SET_ATMEGA_DEBUG:
+            if (uart_buffer_index >= 2) {
+                debug_enabled = uart_buffer[1];
+                LOG_INFO("[UART] Debug ");
+                if (debug_enabled) {
+                    LOG_INFO("enabled\r\n");
+                } else {
+                    LOG_INFO("disabled\r\n");
+                }
+            }
+            break;
+            
+        case CMD_SET_ATMEGA_LOG_LEVEL:
+            if (uart_buffer_index >= 2) {
+                log_level = uart_buffer[1];
+                if (log_level > 3) log_level = 3;
+                LOG_INFO("[UART] Log level set to: ");
+                debug_print_dec(log_level);
+                debug_print("\r\n");
+            }
+            break;
+            
+        case CMD_SET_DISPLAY_IMAGE:
+            if (uart_buffer_index >= 3) {
+                image_expected_size = uart_buffer[1] | (uart_buffer[2] << 8);
+                image_received_bytes = 0;
+                image_chunk_index = 0;
+                image_receiving = 1;
+                LOG_INFO("[UART] Starting image reception, size: ");
+                debug_print_dec(image_expected_size);
+                debug_print("\r\n");
+            }
+            break;
+            
+        case CMD_SET_DISPLAY_IMAGE_CHUNK:
+            if (image_receiving && uart_buffer_index >= 4) {
+                uint16_t chunk_idx = uart_buffer[1] | (uart_buffer[2] << 8);
+                uint8_t chunk_size = uart_buffer[3];
+                
+                if (chunk_size > 0 && chunk_size <= IMAGE_CHUNK_SIZE && 
+                    (uart_buffer_index - 4) >= chunk_size) {
+                    
+                    // Calculer la position dans l'image
+                    uint16_t byte_offset = chunk_idx * IMAGE_CHUNK_SIZE;
+                    uint16_t pixel_offset = byte_offset / 2;
+                    uint16_t x = pixel_offset % ST7789_WIDTH;
+                    uint16_t y = pixel_offset / ST7789_WIDTH;
+                    uint16_t pixels_in_chunk = chunk_size / 2;
+                    uint16_t end_x = x + pixels_in_chunk;
+                    
+                    if (end_x > ST7789_WIDTH) {
+                        end_x = ST7789_WIDTH;
+                        pixels_in_chunk = ST7789_WIDTH - x;
+                    }
+                    
+                    // Dessiner le chunk sur l'écran
+                    st7789_set_window(x, y, end_x - 1, y);
+                    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+                    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
+                    for (uint8_t i = 0; i < chunk_size; i++) {
+                        spi_write(uart_buffer[4 + i]);
+                    }
+                    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+                    
+                    image_received_bytes += chunk_size;
+                    image_chunk_index++;
+                    
+                    if (image_received_bytes >= image_expected_size) {
+                        image_receiving = 0;
+                        LOG_INFO("[UART] Image reception complete, ");
+                        debug_print_dec(image_received_bytes);
+                        debug_print(" bytes\r\n");
+                    }
+                }
+            }
+            break;
+    }
+    
+    // Réinitialiser le buffer
+    uart_buffer_index = 0;
+    uart_command = 0;
+}
+
+// Interruption UART (réception)
+ISR(USART_RX_vect) {
+    uint8_t received = UDR0;
+    
+    // Si on reçoit un caractère de fin de ligne, traiter la commande
+    if (received == '\n' || received == '\r') {
+        if (uart_buffer_index > 0) {
+            processUartCommand();
+        }
+        uart_buffer_index = 0;
+    } else {
+        // Ajouter le byte au buffer
+        if (uart_buffer_index < UART_BUFFER_SIZE - 1) {
+            uart_buffer[uart_buffer_index++] = received;
+        } else {
+            // Buffer plein, réinitialiser
+            uart_buffer_index = 0;
+        }
+    }
+}

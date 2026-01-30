@@ -1,0 +1,64 @@
+---
+---
+
+<div class="fingerprint-panel">
+  <h2>Capteur d'empreinte digitale</h2>
+  <div class="form-group">
+    <label>
+      <input type="checkbox" id="fingerprint-enabled">
+      Activer le déverrouillage par empreinte
+    </label>
+  </div>
+  <div class="form-group">
+    <label>État du capteur:</label>
+    <div id="fingerprint-status" class="status-badge">Non initialisé</div>
+  </div>
+  
+  <div class="form-group">
+    <label>Statistiques:</label>
+    <div class="fingerprint-stats">
+      <div class="stat-item">
+        <span class="stat-label">Empreintes enregistrées:</span>
+        <span id="fingerprint-count" class="stat-value">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Capacité:</span>
+        <span id="fingerprint-capacity" class="stat-value">0/10</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>Enregistrer une nouvelle empreinte:</label>
+    <div class="enroll-section">
+      <input type="text" id="fingerprint-name-input" placeholder="Nom de l'empreinte (ex: Pouce droit)" class="form-input" maxlength="30">
+      <select id="fingerprint-profile-select" class="form-select">
+        <option value="">Aucun profil associé</option>
+      </select>
+      <button id="enroll-btn" class="btn btn-success">
+        <i data-lucide="fingerprint" class="btn-icon"></i>
+        <span>Enregistrer</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>Empreintes enregistrées:</label>
+    <div id="fingerprint-list" class="fingerprint-list">
+      <div class="empty-state">Aucune empreinte enregistrée</div>
+    </div>
+  </div>
+
+  <div class="button-group">
+    <button id="refresh-fingerprints-btn" class="btn btn-secondary">
+      <i data-lucide="refresh-cw" class="btn-icon"></i>
+      <span>Actualiser</span>
+    </button>
+    <button id="delete-all-btn" class="btn btn-danger">
+      <i data-lucide="trash-2" class="btn-icon"></i>
+      <span>Supprimer toutes</span>
+    </button>
+  </div>
+  
+  <div id="fingerprint-feedback" class="feedback-message"></div>
+</div>

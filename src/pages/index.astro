@@ -1,0 +1,99 @@
+---
+import Layout from '../layouts/Layout.astro';
+import NumpadGrid from '../components/NumpadGrid.astro';
+import ConfigPanel from '../components/ConfigPanel.astro';
+import StatusBar from '../components/StatusBar.astro';
+import TabNavigation from '../components/TabNavigation.astro';
+import BacklightPanel from '../components/BacklightPanel.astro';
+import FingerprintPanel from '../components/FingerprintPanel.astro';
+import DisplayPanel from '../components/DisplayPanel.astro';
+import SettingsPanel from '../components/SettingsPanel.astro';
+---
+
+<Layout title="Configuration Macropad">
+  <div class="container">
+    <header>
+      <h1>
+        <i data-lucide="keyboard" class="header-icon"></i>
+        Configuration Macropad
+      </h1>
+      <p class="subtitle">Personnalisez vos touches</p>
+    </header>
+
+    <StatusBar />
+
+    <TabNavigation />
+
+    <div class="tabs-content">
+      <!-- Onglet Principal -->
+      <div class="tab-panel active" id="tab-main">
+        <div class="main-layout">
+          <div class="main-column left-column">
+            <div class="grid-container">
+              <NumpadGrid />
+            </div>
+          </div>
+          <div class="main-column center-column">
+            <ConfigPanel />
+          </div>
+        </div>
+      </div>
+
+      <!-- Onglet Matériel -->
+      <div class="tab-panel" id="tab-hardware">
+        <div class="hardware-layout">
+          <div class="hardware-column">
+            <BacklightPanel />
+          </div>
+          <div class="hardware-column">
+            <FingerprintPanel />
+          </div>
+        </div>
+      </div>
+
+      <!-- Onglet Écran -->
+      <div class="tab-panel" id="tab-display">
+        <div class="display-layout">
+          <div class="display-config-section">
+            <DisplayPanel />
+          </div>
+        </div>
+      </div>
+
+      <!-- Onglet Paramètres -->
+      <div class="tab-panel" id="tab-settings">
+        <div class="settings-layout">
+          <div class="settings-column">
+            <SettingsPanel />
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  import { initApp } from '../../public/scripts/main.js';
+  
+  // Initialiser les icônes Lucide
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+  
+  // Initialiser l'application
+  document.addEventListener('DOMContentLoaded', () => {
+    initApp();
+    
+    // Mettre à jour les icônes après changement de thème
+    const observer = new MutationObserver(() => {
+      if (typeof lucide !== 'undefined') {
+        lucide.createIcons();
+      }
+    });
+    
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme']
+    });
+  });
+</script>

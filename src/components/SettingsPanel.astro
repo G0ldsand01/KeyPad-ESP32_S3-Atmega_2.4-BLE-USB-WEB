@@ -1,0 +1,103 @@
+---
+---
+
+<div class="settings-panel">
+  <h2>Paramètres système</h2>
+  
+  <div class="form-group">
+    <label>Debug et Logging</label>
+    <div class="settings-section">
+      <div class="form-group">
+        <label class="settings-label">
+          <input type="checkbox" id="debug-esp32-enabled">
+          <span>Debug ESP32</span>
+        </label>
+        <small class="form-hint">Active les messages de debug sur l'ESP32 (Serial/USB)</small>
+      </div>
+      
+      <div class="form-group">
+        <label class="settings-label">
+          <input type="checkbox" id="logging-esp32-enabled">
+          <span>Logging ESP32</span>
+        </label>
+        <small class="form-hint">Active le logging détaillé des opérations ESP32</small>
+      </div>
+      
+      <div class="form-group">
+        <label class="settings-label">
+          <input type="checkbox" id="logging-atmega-enabled">
+          <span>Logging ATmega328P</span>
+        </label>
+        <small class="form-hint">Active le logging UART sur l'ATmega328P (nécessite connexion UART)</small>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>Niveaux de logging</label>
+    <div class="settings-section">
+      <div class="form-group">
+        <label for="esp32-log-level">Niveau de log ESP32:</label>
+        <select id="esp32-log-level" class="form-control">
+          <option value="none">Aucun</option>
+          <option value="error">Erreurs uniquement</option>
+          <option value="warn">Avertissements</option>
+          <option value="info" selected>Information</option>
+          <option value="debug">Debug complet</option>
+          <option value="verbose">Verbose (tout)</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label for="atmega-log-level">Niveau de log ATmega:</label>
+        <select id="atmega-log-level" class="form-control">
+          <option value="none">Aucun</option>
+          <option value="error">Erreurs uniquement</option>
+          <option value="info" selected>Information</option>
+          <option value="debug">Debug complet</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>Options de debug</label>
+    <div class="settings-section">
+      <div class="checkbox-group">
+        <label>
+          <input type="checkbox" id="debug-hid-enabled">
+          Debug HID (touches, clavier)
+        </label>
+        <label>
+          <input type="checkbox" id="debug-i2c-enabled">
+          Debug I2C (communication ATmega)
+        </label>
+        <label>
+          <input type="checkbox" id="debug-web-enabled">
+          Debug Web UI (messages Web)
+        </label>
+        <label>
+          <input type="checkbox" id="debug-display-enabled">
+          Debug Display (écran ST7789)
+        </label>
+        <label>
+          <input type="checkbox" id="debug-config-enabled">
+          Debug Config (configuration, profils)
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="button-group">
+    <button id="apply-settings-btn" class="btn btn-primary">
+      <i data-lucide="save" class="btn-icon"></i>
+      <span>Appliquer les paramètres</span>
+    </button>
+    <button id="reset-settings-btn" class="btn btn-secondary">
+      <i data-lucide="refresh-cw" class="btn-icon"></i>
+      <span>Réinitialiser</span>
+    </button>
+  </div>
+
+  <div id="settings-feedback" class="feedback-message"></div>
+</div>

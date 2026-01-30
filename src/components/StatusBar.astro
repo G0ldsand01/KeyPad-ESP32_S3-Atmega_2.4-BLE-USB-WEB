@@ -1,0 +1,23 @@
+---
+---
+
+<div class="status-bar">
+  <div class="status-bar-left status-item">
+    <span class="status-label">État:</span>
+    <span id="connection-status" class="status-value disconnected">Déconnecté</span>
+  </div>
+  <div class="status-bar-right status-actions">
+    <select id="connection-type" class="form-control connection-select">
+      <option value="bluetooth">Bluetooth (ESP32)</option>
+      <option value="usb">Wired (USB)</option>
+      <option value="wifi">WiFi (Dongle)</option>
+    </select>
+    <button id="connect-btn" class="btn btn-primary">
+      <i data-lucide="link" class="btn-icon"></i>
+      <span class="connect-btn-text">Se connecter</span>
+    </button>
+    <button id="theme-toggle" class="btn btn-secondary" title="Changer de thème">
+      <i data-lucide="moon" class="btn-icon" id="theme-icon"></i>
+    </button>
+  </div>
+</div>

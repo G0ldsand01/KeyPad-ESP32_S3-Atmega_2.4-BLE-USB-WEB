@@ -1,0 +1,140 @@
+---
+---
+
+<div class="config-panel">
+  <h2>Configuration</h2>
+  <div class="profile-block">
+    <label for="profile-select">Profil actif:</label>
+    <div class="profile-row">
+      <select id="profile-select" class="form-control profile-select"></select>
+      <div class="profile-actions">
+        <button type="button" id="profile-add" class="btn btn-secondary btn-icon-only" title="Nouveau profil">
+          <i data-lucide="plus"></i>
+        </button>
+        <button type="button" id="profile-duplicate" class="btn btn-secondary btn-icon-only" title="Dupliquer le profil">
+          <i data-lucide="copy"></i>
+        </button>
+        <button type="button" id="profile-delete" class="btn btn-secondary btn-icon-only" title="Supprimer le profil">
+          <i data-lucide="trash-2"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+  <p class="config-intro">Sélectionnez une touche sur le pavé, définissez son type et sa valeur, puis enregistrez.</p>
+  <div class="config-keys-badge">
+    <i data-lucide="layers" class="config-badge-icon"></i>
+    <span id="config-keys-count">0/16</span> touches configurées
+  </div>
+  <div class="form-group">
+    <label for="key-select">Touche sélectionnée:</label>
+    <div class="key-display" id="selected-key-display">Aucune</div>
+  </div>
+  <div class="form-group">
+    <label for="key-label">Label personnalisé <span class="form-optional">(optionnel)</span>:</label>
+    <input type="text" id="key-label" class="form-control" placeholder="Ex: Copier, Envoyer">
+    <small class="form-hint">Nom affiché sur la touche (sinon la valeur)</small>
+  </div>
+  <div class="form-group">
+    <label for="key-type">Type de touche:</label>
+    <select id="key-type" class="form-control">
+      <option value="key">Touche simple</option>
+      <option value="modifier">Modificateur</option>
+      <option value="media">Média</option>
+      <option value="macro">Macro</option>
+    </select>
+  </div>
+  <div class="form-group" id="key-input-group">
+    <label for="key-value">Valeur:</label>
+    <input type="text" id="key-value" class="form-control" placeholder="Ex: a, Ctrl+C, ENTER">
+    <small class="form-hint">Appuyez sur une touche (avec modificateurs) ou utilisez les raccourcis ci‑dessous</small>
+    <div class="form-group quick-values-wrap" id="quick-values-group" style="display: none;">
+      <label class="quick-values-label">Raccourcis:</label>
+      <div id="quick-keys-row" class="quick-values-row">
+        <button type="button" class="quick-value-btn" data-value="ENTER">Entrée</button>
+        <button type="button" class="quick-value-btn" data-value="SPACE">Espace</button>
+        <button type="button" class="quick-value-btn" data-value="TAB">Tab</button>
+        <button type="button" class="quick-value-btn" data-value="ESC">Échap</button>
+        <button type="button" class="quick-value-btn" data-value="BACKSPACE">Retour</button>
+        <button type="button" class="quick-value-btn" data-value="DELETE">Suppr</button>
+      </div>
+      <div id="quick-arrows-row" class="quick-values-row">
+        <button type="button" class="quick-value-btn" data-value="LEFT">←</button>
+        <button type="button" class="quick-value-btn" data-value="UP">↑</button>
+        <button type="button" class="quick-value-btn" data-value="DOWN">↓</button>
+        <button type="button" class="quick-value-btn" data-value="RIGHT">→</button>
+        <button type="button" class="quick-value-btn" data-value="Select">Select</button>
+        <button type="button" class="quick-value-btn" data-value="Prev">Prev</button>
+        <button type="button" class="quick-value-btn" data-value="Next">Next</button>
+      </div>
+      <div id="quick-modifiers-row" class="quick-values-row">
+        <button type="button" class="quick-value-btn" data-value="CTRL">Ctrl</button>
+        <button type="button" class="quick-value-btn" data-value="SHIFT">Shift</button>
+        <button type="button" class="quick-value-btn" data-value="ALT">Alt</button>
+        <button type="button" class="quick-value-btn" data-value="GUI">Win</button>
+      </div>
+      <div id="quick-shortcuts-row" class="quick-values-row">
+        <button type="button" class="quick-value-btn" data-value="c" data-modifiers="CTRL">Ctrl+C</button>
+        <button type="button" class="quick-value-btn" data-value="v" data-modifiers="CTRL">Ctrl+V</button>
+        <button type="button" class="quick-value-btn" data-value="x" data-modifiers="CTRL">Ctrl+X</button>
+        <button type="button" class="quick-value-btn" data-value="z" data-modifiers="CTRL">Ctrl+Z</button>
+        <button type="button" class="quick-value-btn" data-value="y" data-modifiers="CTRL">Ctrl+Y</button>
+        <button type="button" class="quick-value-btn" data-value="z" data-modifiers="CTRL,SHIFT">Ctrl+Shift+Z</button>
+        <button type="button" class="quick-value-btn" data-value="a" data-modifiers="CTRL">Ctrl+A</button>
+        <button type="button" class="quick-value-btn" data-value="s" data-modifiers="CTRL">Ctrl+S</button>
+        <button type="button" class="quick-value-btn" data-value="f" data-modifiers="CTRL">Ctrl+F</button>
+        <button type="button" class="quick-value-btn" data-value="p" data-modifiers="CTRL">Ctrl+P</button>
+        <button type="button" class="quick-value-btn" data-value="n" data-modifiers="CTRL">Ctrl+N</button>
+        <button type="button" class="quick-value-btn" data-value="h" data-modifiers="CTRL">Ctrl+H</button>
+      </div>
+    </div>
+  </div>
+  <div class="form-group" id="media-preset-group" style="display: none;">
+    <label for="media-preset">Touche média courante:</label>
+    <select id="media-preset" class="form-control">
+      <option value="">— Choisir —</option>
+      <option value="VOLUME_UP">Volume +</option>
+      <option value="VOLUME_DOWN">Volume −</option>
+      <option value="MUTE">Mute</option>
+      <option value="PLAY_PAUSE">Play / Pause</option>
+      <option value="MEDIA_NEXT">Suivant</option>
+      <option value="MEDIA_PREV">Précédent</option>
+      <option value="MEDIA_STOP">Stop</option>
+      <option value="custom">Autre (saisir ci‑dessous)</option>
+    </select>
+  </div>
+  <div class="form-group" id="modifier-group" style="display: none;">
+    <label>Modificateurs:</label>
+    <div class="checkbox-group">
+      <label><input type="checkbox" id="mod-ctrl"> CTRL</label>
+      <label><input type="checkbox" id="mod-shift"> SHIFT</label>
+      <label><input type="checkbox" id="mod-alt"> ALT</label>
+      <label><input type="checkbox" id="mod-gui"> GUI/WIN</label>
+    </div>
+  </div>
+  <div class="form-group" id="macro-group" style="display: none;">
+    <label for="macro-sequence">Séquence de touches:</label>
+    <textarea id="macro-sequence" class="form-control" rows="3" placeholder="Ex: CTRL+C, CTRL+V, ENTER"></textarea>
+    <div class="form-group form-group-inline">
+      <label for="macro-delay">Délai entre les touches (ms):</label>
+      <input type="number" id="macro-delay" class="form-control" min="0" max="500" value="50" style="width: 80px;">
+    </div>
+  </div>
+  <div class="form-group config-preview-wrap">
+    <span class="config-preview-label">Aperçu:</span>
+    <span id="config-preview" class="config-preview">Sélectionnez une touche</span>
+  </div>
+  <div class="button-group">
+    <button id="save-btn" class="btn btn-success">
+      <i data-lucide="save" class="btn-icon"></i>
+      <span>Enregistrer</span>
+    </button>
+    <button id="clear-btn" class="btn btn-secondary">
+      <i data-lucide="x" class="btn-icon"></i>
+      <span>Effacer</span>
+    </button>
+    <button id="reset-btn" class="btn btn-warning">
+      <i data-lucide="rotate-ccw" class="btn-icon"></i>
+      <span>Réinitialiser</span>
+    </button>
+  </div>
+</div>

@@ -1,0 +1,24 @@
+---
+const rows = 5;
+const cols = 4;
+const skipPositions = new Set(['2-3', '4-1', '4-3']);
+---
+
+<div class="numpad-container">
+  <div class="grid-header">
+    <h2>Pavé numérique</h2>
+    <div class="grid-info">
+      <span id="grid-size">4x5</span>
+    </div>
+  </div>
+  <div class="numpad-top-controls">
+    <div class="screen-display">
+      <span id="screen-display-profile" class="screen-display-text"></span>
+    </div>
+    <div class="led-indicator"></div>
+    <div class="potentiometer"></div>
+  </div>
+  <div class="numpad-wrapper">
+    <div id="key-grid" class="numpad-grid"></div>
+  </div>
+</div>

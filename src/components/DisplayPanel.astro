@@ -1,0 +1,80 @@
+---
+---
+
+<div class="display-panel">
+  <h2>Configuration de l'écran</h2>
+  <div class="form-group">
+    <label for="display-screen-mode">Mode d'affichage:</label>
+    <select id="display-screen-mode" class="form-control">
+      <option value="data">Données</option>
+      <option value="image">Image statique</option>
+      <option value="gif">GIF animé</option>
+    </select>
+  </div>
+  <div class="display-image-section form-group">
+    <label>Image / GIF (128×64, converti en 1-bit):</label>
+    <div class="display-image-upload">
+      <input type="file" id="display-image-input" accept="image/*" class="form-control">
+      <div class="display-image-preview-wrap">
+        <canvas id="display-image-preview" width="128" height="64"></canvas>
+        <span id="display-image-info" class="form-hint"></span>
+      </div>
+      <button type="button" id="display-image-remove" class="btn btn-secondary btn-small">Supprimer l'image</button>
+    </div>
+  </div>
+  <div class="config-section-divider"></div>
+  <div class="config-subtitle">Données à afficher</div>
+  <div class="display-custom-data">
+    <div class="checkbox-group">
+      <label><input type="checkbox" id="display-show-profile" checked> Profil</label>
+      <label><input type="checkbox" id="display-show-battery" checked> Batterie</label>
+      <label><input type="checkbox" id="display-show-mode" checked> Mode</label>
+      <label><input type="checkbox" id="display-show-keys" checked> Touches configurées</label>
+      <label><input type="checkbox" id="display-show-backlight" checked> Rétro-éclairage</label>
+      <label><input type="checkbox" id="display-show-custom1"> Ligne perso 1</label>
+      <label><input type="checkbox" id="display-show-custom2"> Ligne perso 2</label>
+    </div>
+    <div class="form-group">
+      <label for="display-custom-line1">Ligne perso 1:</label>
+      <input type="text" id="display-custom-line1" class="form-control" placeholder="Texte libre" maxlength="21">
+    </div>
+    <div class="form-group">
+      <label for="display-custom-line2">Ligne perso 2:</label>
+      <input type="text" id="display-custom-line2" class="form-control" placeholder="Texte libre" maxlength="21">
+    </div>
+  </div>
+  <div class="display-preview">
+    <div class="display-content">
+      <div class="display-header">
+        <span id="display-profile">Profil 1</span>
+        <span id="display-battery" class="battery-indicator">
+          <i data-lucide="battery-full" class="battery-icon"></i>
+          <span>100%</span>
+        </span>
+      </div>
+      <div class="display-body">
+        <div class="display-item">
+          <span class="display-label">Mode:</span>
+          <span id="display-mode">USB</span>
+        </div>
+        <div class="display-item">
+          <span class="display-label">Touches configurées:</span>
+          <span id="display-keys-count">0/16</span>
+        </div>
+        <div class="display-item">
+          <span class="display-label">Rétro-éclairage:</span>
+          <span id="display-backlight">ON</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="form-group">
+    <label for="display-brightness">Luminosité écran:</label>
+    <input type="range" id="display-brightness" class="slider" min="0" max="100" value="50" step="1">
+    <span id="display-brightness-value">50%</span>
+  </div>
+  <button id="apply-display-btn" class="btn btn-primary">
+    <i data-lucide="check" class="btn-icon"></i>
+    <span>Appliquer</span>
+  </button>
+</div>

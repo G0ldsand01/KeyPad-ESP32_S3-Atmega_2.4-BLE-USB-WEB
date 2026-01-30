@@ -1,0 +1,25 @@
+# Arduino
+*.hex
+*.elf
+*.bin
+build/
+.vscode/
+node_modules/
+# SPIFFS
+data/
+spiffs.bin
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
