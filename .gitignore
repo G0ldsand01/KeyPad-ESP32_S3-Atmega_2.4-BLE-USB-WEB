@@ -23,3 +23,6 @@ desktop.ini
 # Logs
 *.log
 
+/PCB/numberpad-backups
+PCB/\#auto_saved_files\#
+PCB/_autosave-numberpad.kicad_sch

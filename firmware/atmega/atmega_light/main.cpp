@@ -16,7 +16,7 @@
  * - ST7789 SCK: PB5 (Pin 19) - SPI Clock
  * - ST7789 CS: PB2 (Pin 16) - Chip Select
  * - ST7789 DC: PB1 (Pin 15) - Data/Command
- * - ST7789 RST: PB0 (Pin 14) - Reset (optionnel, peut être connecté à VCC)
+ * - ST7789 RST: PB0 (Pin 14) - Reset (optionnel, peut être connecté à VCC) 
  */ 
 
 #include <avr/io.h>
@@ -29,7 +29,9 @@
 #define UART_UBRR (F_CPU / 16 / UART_BAUD - 1)
 // F_CPU devrait être défini dans les options du projet (Project Properties > Toolchain > AVR/GNU C++ Compiler > Symbols)
 // Si ce n'est pas le cas, décommentez la ligne suivante :
-// #define F_CPU 16000000UL
+#ifndef F_CPU
+#define F_CPU 16000000UL
+#endif
 
 // Protocole UART
 // Format: [CMD] [DATA...] [\n]
@@ -44,8 +46,8 @@
 #define CMD_SET_ATMEGA_LOG_LEVEL 0x0B  // Définir le niveau de log de l'ATmega
 
 // Configuration ST7789
-#define ST7789_WIDTH 240
-#define ST7789_HEIGHT 320
+#define ST7789_WIDTH 320
+#define ST7789_HEIGHT 170
 #define ST7789_CS_PORT PORTB
 #define ST7789_CS_DDR DDRB
 #define ST7789_CS_PIN PB2
@@ -101,6 +103,7 @@ volatile char display_custom2[32] = "";
 volatile uint8_t display_brightness = 128;
 volatile uint8_t display_data_receiving = 0;
 volatile uint8_t display_data_buffer_index = 0;
+volatile uint8_t display_initialized = 0;  // Flag: 1 si l'affichage a été initialisé avec Welcome
 
 // Variables pour le debug et logging
 volatile uint8_t debug_enabled = 0;  // 0 = désactivé, 1 = activé
@@ -169,6 +172,8 @@ void st7789_fill_screen(uint16_t color);
 void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color);
 void st7789_draw_image_rgb565(uint8_t* imageData, uint16_t imageSize);
 void st7789_update_display(void);
+void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg_color);
+void st7789_draw_text(uint16_t x, uint16_t y, const char* text, uint16_t color, uint16_t bg_color);
 void processUartCommand(void);
 void uart_send_byte(uint8_t data);
 void uart_send_response(uint8_t cmd, uint8_t* data, uint8_t len);
@@ -279,31 +284,92 @@ void st7789_init(void) {
     _delay_ms(10);
     
     // Memory access control (orientation)
-    // Pour un écran 1.9" 240x320, on peut essayer différentes orientations
+    // Pour un écran 1.9" 170x320, rotation 180°
     st7789_write_cmd(ST7789_MADCTL);
+    // Bits MADCTL: MY=0, MX=0, MV=1, ML=0, RGB=0, MH=0
     // 0x00 = Normal (portrait, RGB order)
-    // 0x08 = Mirror Y
-    // 0x40 = Mirror X
-    // 0x20 = Mirror X+Y
-    // 0x60 = 90° rotation (landscape)
-    // 0xC0 = 180° rotation
-    // 0xA0 = 270° rotation
-    st7789_write_data(0x00);  // Normal orientation (portrait)
+    // 0x08 = Mirror Y (MY=1)
+    // 0x40 = Mirror X (MX=1)
+    // 0x20 = Mirror X+Y (MY=1, MX=1)
+    // 0x60 = 90° rotation (MV=1, landscape)
+    // 0xC0 = 180° rotation (MY=1, MX=1)
+    // 0xA0 = 270° rotation (MV=1, MY=1)
+    st7789_write_data(0x60);  // Rotation 90° (MV=1, landscape)
     _delay_ms(10);
     
     // Inversion des couleurs - ESSENTIEL pour certains écrans ST7789
-    // Certains écrans nécessitent INVON, d'autres INVOFF
-    st7789_write_cmd(ST7789_INVON);  // Inverser les couleurs
+    // Essayer INVOFF d'abord (pas d'inversion)
+    st7789_write_cmd(ST7789_INVOFF);  // Pas d'inversion des couleurs
     _delay_ms(10);
     
     // Activer l'affichage
     st7789_write_cmd(ST7789_DISPON);
-    _delay_ms(20);
+    _delay_ms(100);  // Délai plus long pour s'assurer que l'écran est prêt
     
-    // Effacer l'écran avec un fond sombre immédiatement
-    // Utiliser un gris foncé au lieu de noir pour éviter les artefacts blancs
-    st7789_fill_screen(0x1082);  // Gris foncé RGB565
+    // Effacer l'écran avec un fond noir au boot
+    // Utiliser une approche plus directe : définir la fenêtre et envoyer des pixels noirs
+    uint16_t black = 0x0000;  // Noir RGB565
+    st7789_set_window(0, 0, ST7789_WIDTH - 1, ST7789_HEIGHT - 1);
+    
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
+    
+    // Envoyer des pixels noirs pour tout l'écran
+    uint8_t black_high = (black >> 8) & 0xFF;
+    uint8_t black_low = black & 0xFF;
+    for (uint32_t i = 0; i < ((uint32_t)ST7789_WIDTH * ST7789_HEIGHT); i++) {
+        spi_write(black_low);
+        spi_write(black_high);
+    }
+    
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+    _delay_ms(200);
+    
+    // Test: Dessiner un grand rectangle blanc pour vérifier que l'affichage fonctionne
+    uint16_t white = 0xFFFF;  // Blanc RGB565
+    st7789_fill_rect(0, 0, ST7789_WIDTH, 50, white);  // Rectangle blanc en haut de l'écran
+    _delay_ms(300);
+    
+    // Effacer à nouveau pour avoir un fond noir propre
+    st7789_set_window(0, 0, ST7789_WIDTH - 1, ST7789_HEIGHT - 1);
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
+    for (uint32_t i = 0; i < ((uint32_t)ST7789_WIDTH * ST7789_HEIGHT); i++) {
+        spi_write(black_low);
+        spi_write(black_high);
+    }
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+    _delay_ms(200);
+    
+    // Afficher le texte en haut à gauche (10px du top, 20px de gauche)
+    uint16_t text_x = 20;  // 20px de gauche
+    uint16_t text_y = 10;  // 10px du top
+    
+    // Afficher "WELCOME TO MY KEYPAD" (en majuscules car la police ne supporte que A-Z)
+    st7789_draw_text(text_x, text_y, "WELCOME TO MY KEYPAD", white, black);
     _delay_ms(50);
+    
+    // Afficher l'état de connexion sur la ligne suivante
+    uint16_t conn_y = text_y + 10;  // 10 pixels sous le premier texte
+    st7789_draw_text(text_x, conn_y, "CONNECTION : ", white, black);
+    _delay_ms(50);
+    
+    // Déterminer l'état de connexion
+    // Par défaut, on affiche "IDLE" jusqu'à ce qu'on reçoive une mise à jour de l'ESP32
+    const char* conn_status = "IDLE";
+    if (strcmp((char*)display_output_mode, "usb") == 0) {
+        conn_status = "USB";
+    } else if (strcmp((char*)display_output_mode, "bluetooth") == 0) {
+        conn_status = "BLUETOOTH";
+    }
+    
+    // Afficher le statut de connexion (position après "CONNECTION : ")
+    uint16_t status_x = text_x + (13 * 6);  // 13 caractères * 6 pixels = 78 pixels
+    st7789_draw_text(status_x, conn_y, conn_status, white, black);
+    _delay_ms(200);
+    
+    // Marquer que l'affichage Welcome a été initialisé
+    display_initialized = 1;
     
     debug_print("ST7789 initialized\r\n");
 }
@@ -329,6 +395,8 @@ void st7789_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
 void st7789_fill_screen(uint16_t color) {
     st7789_set_window(0, 0, ST7789_WIDTH - 1, ST7789_HEIGHT - 1);
     
+    // RGB565: Format 16-bit RRRRRGGGGGGBBBBB
+    // Pour ST7789, tester les deux ordres possibles
     uint8_t color_high = (color >> 8) & 0xFF;
     uint8_t color_low = color & 0xFF;
     
@@ -336,12 +404,13 @@ void st7789_fill_screen(uint16_t color) {
     ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
     
     // Dessiner pixel par pixel pour éviter l'overflow
-    // 240*320 = 76800 pixels (dépasse uint16_t max 65535)
-    // On utilise deux boucles imbriquées
+    // 320*170 = 54400 pixels (OK pour uint16_t)
+    // Avec rotation 90°, tester l'ordre inversé (low puis high)
     for (uint16_t y = 0; y < ST7789_HEIGHT; y++) {
         for (uint16_t x = 0; x < ST7789_WIDTH; x++) {
-            spi_write(color_high);
+            // Essayer l'ordre inversé (low puis high) - certains écrans ST7789 nécessitent cet ordre
             spi_write(color_low);
+            spi_write(color_high);
         }
     }
     
@@ -361,9 +430,10 @@ void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t c
     ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
     ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
     
+    // Utiliser l'ordre inversé (low puis high) pour correspondre à fill_screen
     for (uint16_t i = 0; i < w * h; i++) {
-        spi_write(color_high);
         spi_write(color_low);
+        spi_write(color_high);
     }
     
     ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
@@ -372,7 +442,8 @@ void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t c
 // Dessiner une image RGB565 complète (240x320)
 void st7789_draw_image_rgb565(uint8_t* imageData, uint16_t imageSize) {
     // Vérifier que la taille est correcte (240x320x2 = 153600)
-    if (imageSize != (ST7789_WIDTH * ST7789_HEIGHT * 2)) {
+    uint32_t expected_size = (uint32_t)ST7789_WIDTH * ST7789_HEIGHT * 2;
+    if (imageSize != expected_size) {
         return;  // Taille invalide
     }
     
@@ -406,9 +477,112 @@ void st7789_draw_progress_bar(uint16_t x, uint16_t y, uint16_t w, uint16_t h, ui
     }
 }
 
-// Fonction simple pour dessiner un rectangle de texte (simulation)
-// Note: Pour un vrai affichage de texte, il faudrait une bibliothèque de fonts bitmap
-// Pour l'instant, on affiche des rectangles colorés avec des informations visuelles
+// Police bitmap simple 5x7 pour les caractères ASCII
+// Chaque caractère est représenté par 5 colonnes de 7 bits
+const uint8_t font_5x7[][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // Espace (32)
+    {0x00, 0x00, 0x5F, 0x00, 0x00}, // !
+    {0x00, 0x07, 0x00, 0x07, 0x00}, // "
+    {0x14, 0x7F, 0x14, 0x7F, 0x14}, // #
+    {0x24, 0x2A, 0x7F, 0x2A, 0x12}, // $
+    {0x23, 0x13, 0x08, 0x64, 0x62}, // %
+    {0x36, 0x49, 0x55, 0x22, 0x50}, // &
+    {0x00, 0x05, 0x03, 0x00, 0x00}, // '
+    {0x00, 0x1C, 0x22, 0x41, 0x00}, // (
+    {0x00, 0x41, 0x22, 0x1C, 0x00}, // )
+    {0x14, 0x08, 0x3E, 0x08, 0x14}, // *
+    {0x08, 0x08, 0x3E, 0x08, 0x08}, // +
+    {0x00, 0x00, 0xA0, 0x60, 0x00}, // ,
+    {0x08, 0x08, 0x08, 0x08, 0x08}, // -
+    {0x00, 0x60, 0x60, 0x00, 0x00}, // .
+    {0x20, 0x10, 0x08, 0x04, 0x02}, // /
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, // 0
+    {0x00, 0x42, 0x7F, 0x40, 0x00}, // 1
+    {0x42, 0x61, 0x51, 0x49, 0x46}, // 2
+    {0x21, 0x41, 0x45, 0x4B, 0x31}, // 3
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, // 4
+    {0x27, 0x45, 0x45, 0x45, 0x39}, // 5
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, // 6
+    {0x01, 0x71, 0x09, 0x05, 0x03}, // 7
+    {0x36, 0x49, 0x49, 0x49, 0x36}, // 8
+    {0x06, 0x49, 0x49, 0x29, 0x1E}, // 9
+    {0x00, 0x36, 0x36, 0x00, 0x00}, // :
+    {0x00, 0x56, 0x36, 0x00, 0x00}, // ;
+    {0x08, 0x14, 0x22, 0x41, 0x00}, // <
+    {0x14, 0x14, 0x14, 0x14, 0x14}, // =
+    {0x00, 0x41, 0x22, 0x14, 0x08}, // >
+    {0x02, 0x01, 0x51, 0x09, 0x06}, // ?
+    {0x32, 0x49, 0x59, 0x51, 0x3E}, // @
+    {0x7C, 0x12, 0x11, 0x12, 0x7C}, // A
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // B
+    {0x3E, 0x41, 0x41, 0x41, 0x22}, // C
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, // D
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // E
+    {0x7F, 0x09, 0x09, 0x09, 0x01}, // F
+    {0x3E, 0x41, 0x49, 0x49, 0x7A}, // G
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // H
+    {0x00, 0x41, 0x7F, 0x41, 0x00}, // I
+    {0x20, 0x40, 0x41, 0x3F, 0x01}, // J
+    {0x7F, 0x08, 0x14, 0x22, 0x41}, // K
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, // L
+    {0x7F, 0x02, 0x0C, 0x02, 0x7F}, // M
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, // N
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // O
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, // P
+    {0x3E, 0x41, 0x51, 0x21, 0x5E}, // Q
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, // R
+    {0x46, 0x49, 0x49, 0x49, 0x31}, // S
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, // T
+    {0x3F, 0x40, 0x40, 0x40, 0x3F}, // U
+    {0x1F, 0x20, 0x40, 0x20, 0x1F}, // V
+    {0x3F, 0x40, 0x38, 0x40, 0x3F}, // W
+    {0x63, 0x14, 0x08, 0x14, 0x63}, // X
+    {0x07, 0x08, 0x70, 0x08, 0x07}, // Y
+    {0x61, 0x51, 0x49, 0x45, 0x43}, // Z
+};
+
+// Dessiner un caractère à la position (x, y)
+void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg_color) {
+    // Espace
+    if (c == ' ') {
+        st7789_fill_rect(x, y, 5, 7, bg_color);
+        return;
+    }
+    
+    // Vérifier si le caractère est dans la plage ASCII imprimable
+    if (c < 32 || c > 90) {
+        return;  // Caractère non supporté
+    }
+    
+    uint8_t char_index = c - 32;
+    if (char_index >= sizeof(font_5x7) / sizeof(font_5x7[0])) {
+        return;  // Index hors limites
+    }
+    
+    // Dessiner le caractère pixel par pixel
+    // La police stocke les bits du LSB (bit 0) au MSB (bit 6) pour chaque colonne
+    for (uint8_t col = 0; col < 5; col++) {
+        uint8_t col_data = font_5x7[char_index][col];
+        for (uint8_t row = 0; row < 7; row++) {
+            // Vérifier le bit correspondant (bit 0 = ligne du bas, bit 6 = ligne du haut)
+            if (col_data & (1 << row)) {
+                st7789_fill_rect(x + col, y + row, 1, 1, color);
+            } else {
+                st7789_fill_rect(x + col, y + row, 1, 1, bg_color);
+            }
+        }
+    }
+}
+
+// Dessiner une chaîne de texte
+void st7789_draw_text(uint16_t x, uint16_t y, const char* text, uint16_t color, uint16_t bg_color) {
+    uint16_t x_pos = x;
+    while (*text) {
+        st7789_draw_char(x_pos, y, *text, color, bg_color);
+        x_pos += 6;  // Espacement entre les caractères (5 pixels + 1 pixel d'espace)
+        text++;
+    }
+}
 
 // Mettre à jour l'affichage avec les informations réelles
 void st7789_update_display(void) {
@@ -417,12 +591,46 @@ void st7789_update_display(void) {
         return;  // L'image est déjà affichée, ne pas l'écraser
     }
     
+    // Afficher le Welcome avec le statut de connexion
+    // Effacer l'écran avec un fond noir - faire plusieurs fois pour être sûr
+    uint16_t black = 0x0000;  // Noir RGB565
+    for (uint8_t i = 0; i < 2; i++) {
+        st7789_fill_screen(black);
+        _delay_ms(10);
+    }
+    
+    // Afficher le texte en haut à gauche (10px du top, 20px de gauche)
+    uint16_t text_x = 20;  // 20px de gauche
+    uint16_t text_y = 10;  // 10px du top
+    uint16_t white = 0xFFFF;  // Blanc RGB565
+    
+    // Afficher "WELCOME TO MY KEYPAD" (en majuscules car la police ne supporte que A-Z)
+    st7789_draw_text(text_x, text_y, "WELCOME TO MY KEYPAD", white, black);
+    
+    // Afficher l'état de connexion sur la ligne suivante
+    uint16_t conn_y = text_y + 10;  // 10 pixels sous le premier texte
+    st7789_draw_text(text_x, conn_y, "CONNECTION : ", white, black);
+    
+    // Déterminer l'état de connexion
+    const char* conn_status = "IDLE";
+    if (strcmp((char*)display_output_mode, "usb") == 0) {
+        conn_status = "USB";
+    } else if (strcmp((char*)display_output_mode, "bluetooth") == 0) {
+        conn_status = "BLUETOOTH";
+    }
+    
+    // Afficher le statut de connexion (position après "CONNECTION : ")
+    uint16_t status_x = text_x + (13 * 6);  // 13 caractères * 6 pixels = 78 pixels
+    st7789_draw_text(status_x, conn_y, conn_status, white, black);
+    
+    return;  // On a affiché le Welcome, on sort (ne pas afficher les autres éléments)
+    
+    // Code ci-dessous n'est plus utilisé (affichage des barres de progression, etc.)
     // Effacer l'écran avec un fond sombre (gris foncé au lieu de noir pour meilleur contraste)
     uint16_t bg_color = 0x1082;  // Gris foncé RGB565
     st7789_fill_screen(bg_color);
     
     // Couleurs RGB565
-    uint16_t color_white = 0xFFFF;
     uint16_t color_green = 0x07E0;
     uint16_t color_blue = 0x001F;
     uint16_t color_red = 0xF800;
@@ -431,7 +639,6 @@ void st7789_update_display(void) {
     uint16_t color_magenta = 0xF81F;
     uint16_t color_gray = 0x8410;
     uint16_t color_dark_gray = 0x4208;
-    uint16_t color_light_gray = 0xC618;
     
     // Vérifier le mode d'affichage
     // Si mode = "image" ou "gif", ne rien faire (l'image est déjà affichée)
@@ -519,7 +726,7 @@ void st7789_update_display(void) {
 // Initialiser UART
 void uart_init(void) {
     // Calculer UBRR pour le baud rate
-    uint16_t ubrr = (F_CPU / 16 / UART_BAUD) - 1;
+    uint16_t ubrr = (uint16_t)((F_CPU / 16UL / UART_BAUD) - 1);
     UBRR0H = (uint8_t)(ubrr >> 8);
     UBRR0L = (uint8_t)(ubrr & 0xFF);
     
@@ -558,9 +765,8 @@ int main(void) {
     display_backlight_brightness = 0;
     display_brightness = 128;
     
-    // Afficher les informations initiales
-    _delay_ms(100);
-    st7789_u pdate_display();  // Afficher les informations initiales
+    // Ne pas appeler st7789_update_display() ici - l'affichage Welcome est déjà fait dans st7789_init()
+    // On attendra qu'une commande UART demande explicitement une mise à jour
     
     uart_init();
     debug_print("UART initialized\r\n");
@@ -583,18 +789,20 @@ int main(void) {
             debug_print_hex((uint8_t)(light_level & 0xFF));
             debug_print(")\r\n");
             
-            // Mettre à jour l'affichage quand la luminosité change
-            st7789_update_display();
+            // Ne pas mettre à jour l'affichage automatiquement si on est encore en mode Welcome
+            // On attendra qu'une commande UART demande explicitement une mise à jour
+            // st7789_update_display();  // DÉSACTIVÉ - ne pas écraser le Welcome
         }
         
-        // Mettre à jour l'affichage périodiquement (toutes les secondes)
+        // Ne pas mettre à jour l'affichage périodiquement si on est encore en mode Welcome
+        // On attendra qu'une commande UART demande explicitement une mise à jour
         // Note: millis() n'existe pas sur AVR, utiliser un compteur
-        static uint16_t update_counter = 0;
-        update_counter++;
-        if (update_counter >= 10) {  // ~1 seconde (100ms * 10)
-            update_counter = 0;
-            st7789_update_display();
-        }
+        // static uint16_t update_counter = 0;
+        // update_counter++;
+        // if (update_counter >= 10) {  // ~1 seconde (100ms * 10)
+        //     update_counter = 0;
+        //     st7789_update_display();  // DÉSACTIVÉ - ne pas écraser le Welcome
+        // }
         
         // Petit délai pour éviter de surcharger l'ADC
         _delay_ms(100);
@@ -672,7 +880,7 @@ void processUartCommand() {
                 if (pos < uart_buffer_index) {
                     uint8_t mode_len = uart_buffer[pos++];
                     if (mode_len < 16 && pos + mode_len < uart_buffer_index) {
-                        memcpy(display_mode, &uart_buffer[pos], mode_len);
+                        memcpy((void*)display_mode, (const void*)&uart_buffer[pos], mode_len);
                         display_mode[mode_len] = '\0';
                         pos += mode_len;
                     }
@@ -681,7 +889,7 @@ void processUartCommand() {
                 if (pos < uart_buffer_index) {
                     uint8_t profile_len = uart_buffer[pos++];
                     if (profile_len < 32 && pos + profile_len < uart_buffer_index) {
-                        memcpy(display_profile, &uart_buffer[pos], profile_len);
+                        memcpy((void*)display_profile, (const void*)&uart_buffer[pos], profile_len);
                         display_profile[profile_len] = '\0';
                         pos += profile_len;
                     }
@@ -690,7 +898,7 @@ void processUartCommand() {
                 if (pos < uart_buffer_index) {
                     uint8_t output_len = uart_buffer[pos++];
                     if (output_len < 16 && pos + output_len < uart_buffer_index) {
-                        memcpy(display_output_mode, &uart_buffer[pos], output_len);
+                        memcpy((void*)display_output_mode, (const void*)&uart_buffer[pos], output_len);
                         display_output_mode[output_len] = '\0';
                         pos += output_len;
                     }
@@ -708,7 +916,11 @@ void processUartCommand() {
                     display_backlight_brightness = uart_buffer[pos];
                 }
                 
-                st7789_update_display();
+                // Mettre à jour l'affichage seulement si on a reçu une vraie configuration (pas juste les valeurs par défaut)
+                // Cela évite d'écraser le Welcome au démarrage
+                if (strcmp((char*)display_profile, "Profile 1") != 0 || display_keys_count > 0) {
+                    st7789_update_display();
+                }
             }
             break;
             

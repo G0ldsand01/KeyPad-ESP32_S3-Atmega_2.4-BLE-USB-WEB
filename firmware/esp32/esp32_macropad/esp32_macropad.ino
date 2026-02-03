@@ -575,6 +575,9 @@ void updateDisplay();
 void sendDisplayDataToAtmega();
 void sendImageToAtmega(uint8_t* imageData, uint16_t imageSize);
 void updateRowKeysFromProfile();  // Mettre à jour rowKeys depuis le profil actif
+void loadConfigFromFlash();
+void saveConfigToFlash();
+void sendConfigToWeb();  // Envoyer la configuration actuelle (depuis flash) à l'interface web
 
 // ==================== VARIABLES GLOBALES ====================
 
@@ -885,6 +888,10 @@ void processWebMessage(String message) {
         } else {
             DEBUG_WEB_PRINTF("[WEB_UI] JSON parse error: %s\n", error.c_str());
         }
+    } else if (message.startsWith("{\"type\":\"get_config\"")) {
+        DEBUG_WEB_PRINTLN("[WEB_UI] Config request - sending config from flash");
+        // Envoyer la configuration actuelle chargée depuis la flash
+        sendConfigToWeb();
     } else if (message.startsWith("{\"type\":\"status\"")) {
         DEBUG_WEB_PRINTLN("[WEB_UI] Status request");
         sendStatusMessage("Macropad ready");
@@ -1139,42 +1146,43 @@ void handleKeyPress(int row, int col, bool pressed) {
 }
 
 // Fonction pour mettre à jour rowKeys depuis le profil actif
+// Mapping simple et direct: row/col -> index séquentiel
 void updateRowKeysFromProfile() {
     if (config.profileCount == 0) return;
     
     Profile& profile = config.profiles[config.activeProfileIndex];
     
-    // Row0 (GPIO4): [profileswitch, /, *, 0] - 4 éléments (cols 0,1,2,3)
+    // Row0 (GPIO4): [profile, /, *, -] - 4 éléments (cols 0,1,2,3) -> indices 0,1,2,3
     rowKeys[0].keyCount = 4;
-    rowKeys[0].keys[0] = profile.keys[0];   // col 0
-    rowKeys[0].keys[1] = profile.keys[1];   // col 1
-    rowKeys[0].keys[2] = profile.keys[2];   // col 2
-    rowKeys[0].keys[3] = profile.keys[3];   // col 3
+    rowKeys[0].keys[0] = profile.keys[0];   // r0c0 = profile (index 0)
+    rowKeys[0].keys[1] = profile.keys[1];   // r0c1 = / (index 1)
+    rowKeys[0].keys[2] = profile.keys[2];   // r0c2 = * (index 2)
+    rowKeys[0].keys[3] = profile.keys[3];   // r0c3 = - (index 3)
     
-    // Row1 (GPIO5): [7, 8, 9, +] - 4 éléments (cols 0,1,2,3)
+    // Row1 (GPIO5): [7, 8, 9, +] - 4 éléments (cols 0,1,2,3) -> indices 4,5,6,7
     rowKeys[1].keyCount = 4;
-    rowKeys[1].keys[0] = profile.keys[4];   // col 0
-    rowKeys[1].keys[1] = profile.keys[5];   // col 1
-    rowKeys[1].keys[2] = profile.keys[6];   // col 2
-    rowKeys[1].keys[3] = profile.keys[7];   // col 3
+    rowKeys[1].keys[0] = profile.keys[4];   // r1c0 = 7 (index 4)
+    rowKeys[1].keys[1] = profile.keys[5];   // r1c1 = 8 (index 5)
+    rowKeys[1].keys[2] = profile.keys[6];   // r1c2 = 9 (index 6)
+    rowKeys[1].keys[3] = profile.keys[7];   // r1c3 = + (index 7)
     
-    // Row2 (GPIO6): [5, 6, 7] - 3 éléments (cols 0,1,2)
+    // Row2 (GPIO6): [4, 5, 6] - 3 éléments (cols 0,1,2) -> indices 8,9,10
     rowKeys[2].keyCount = 3;
-    rowKeys[2].keys[0] = profile.keys[8];   // col 0
-    rowKeys[2].keys[1] = profile.keys[9];   // col 1
-    rowKeys[2].keys[2] = profile.keys[10];  // col 2
+    rowKeys[2].keys[0] = profile.keys[8];   // r2c0 = 4 (index 8)
+    rowKeys[2].keys[1] = profile.keys[9];   // r2c1 = 5 (index 9)
+    rowKeys[2].keys[2] = profile.keys[10];  // r2c2 = 6 (index 10)
     
-    // Row3 (GPIO7): [1, 2, 3, =] - 4 éléments (cols 0,1,2,3)
+    // Row3 (GPIO7): [1, 2, 3, =] - 4 éléments (cols 0,1,2,3) -> indices 11,12,13,14
     rowKeys[3].keyCount = 4;
-    rowKeys[3].keys[0] = profile.keys[12];  // col 0
-    rowKeys[3].keys[1] = profile.keys[13];  // col 1
-    rowKeys[3].keys[2] = profile.keys[14];  // col 2
-    rowKeys[3].keys[3] = profile.keys[15];  // col 3
+    rowKeys[3].keys[0] = profile.keys[11];  // r3c0 = 1 (index 11)
+    rowKeys[3].keys[1] = profile.keys[12];  // r3c1 = 2 (index 12)
+    rowKeys[3].keys[2] = profile.keys[13];  // r3c2 = 3 (index 13)
+    rowKeys[3].keys[3] = profile.keys[14];  // r3c3 = = (index 14)
     
-    // Row4 (GPIO15): [0, .] - 2 éléments (cols 0,2)
+    // Row4 (GPIO15): [0, .] - 2 éléments (cols 0,2) -> indices 15,16
     rowKeys[4].keyCount = 2;
-    rowKeys[4].keys[0] = profile.keys[16];  // col 0
-    rowKeys[4].keys[2] = profile.keys[18];  // col 2 (note: col 1 et 3 n'existent pas)
+    rowKeys[4].keys[0] = profile.keys[15];  // r4c0 = 0 (index 15)
+    rowKeys[4].keys[2] = profile.keys[16];  // r4c2 = . (index 16)
 }
 
 void sendKey(KeyConfig& key) {
@@ -1440,13 +1448,15 @@ void loadConfigFromFlash() {
     
     // Pour réinitialiser la configuration (si les touches ne fonctionnent pas correctement)
     // Changez forceReset à true, téléversez, puis remettez à false
-    bool forceReset = false;  // Mettre à true pour réinitialiser complètement la config
-    bool forceResetRow0 = true;  // Mettre à true pour forcer la réinitialisation de row0 uniquement
+    bool forceReset = true;  // Mettre à true pour réinitialiser complètement la config
+    bool forceResetRow0 = false;  // Mettre à true pour forcer la réinitialisation de row0 uniquement
     
     if (config.profileCount == 0 || forceReset) {
         // Réinitialiser complètement la configuration
         if (forceReset) {
             preferences.clear();  // Effacer toutes les préférences
+            delay(100);  // Délai pour s'assurer que l'effacement est terminé
+            DEBUG_PRINTLN("[CONFIG] Flash cleared, resetting all keys");
         }
         
         config.profileCount = 1;
@@ -1460,6 +1470,18 @@ void loadConfigFromFlash() {
             config.profiles[0].keys[i].modifierCount = 0;
             config.profiles[0].keys[i].macroCount = 0;
         }
+        
+        // Configuration du profil par défaut - Mapping simple et direct
+        // Row0 (GPIO4): [profile, /, *, -] -> indices 0,1,2,3
+        config.profiles[0].keys[0].type = "profile";  // r0c0 = profile switch (index 0)
+        config.profiles[0].keys[0].value = "switch";
+        config.profiles[0].keys[1].type = "key";  // r0c1 = "/" (index 1)
+        config.profiles[0].keys[1].value = "/";
+        config.profiles[0].keys[2].type = "key";  // r0c2 = "*" (index 2)
+        config.profiles[0].keys[2].value = "*";
+        config.profiles[0].keys[3].type = "key";  // r0c3 = "-" (index 3)
+        config.profiles[0].keys[3].value = "-";
+        
     } else if (forceResetRow0) {
         // Réinitialiser uniquement row0 pour corriger le problème de profile switch
         DEBUG_PRINTLN("[CONFIG] Réinitialisation forcée de row0");
@@ -1471,72 +1493,68 @@ void loadConfigFromFlash() {
             config.profiles[config.activeProfileIndex].keys[i].macroCount = 0;
         }
         
-        // Configuration du profil par défaut selon le nouveau système row/col
-        // Row0 (GPIO4): [profileswitch, /, *, 0] - 4 éléments (cols 0,1,2,3)
-        config.profiles[0].keys[0].type = "profile";  // Row0, Col0 = Profile switch
+        // Configuration du profil par défaut - Mapping simple et direct
+        // Row0 (GPIO4): [profile, /, *, -] -> indices 0,1,2,3
+        config.profiles[0].keys[0].type = "profile";  // r0c0 = profile switch (index 0)
         config.profiles[0].keys[0].value = "switch";
-        config.profiles[0].keys[1].type = "key";  // Row0, Col1 = "/"
+        config.profiles[0].keys[1].type = "key";  // r0c1 = "/" (index 1)
         config.profiles[0].keys[1].value = "/";
-        config.profiles[0].keys[2].type = "key";  // Row0, Col2 = "*"
+        config.profiles[0].keys[2].type = "key";  // r0c2 = "*" (index 2)
         config.profiles[0].keys[2].value = "*";
-        config.profiles[0].keys[3].type = "key";  // Row0, Col3 = "0"
-        config.profiles[0].keys[3].value = "0";
+        config.profiles[0].keys[3].type = "key";  // r0c3 = "-" (index 3)
+        config.profiles[0].keys[3].value = "-";
         
         saveConfigToFlash();
-    } else if (forceResetRow0) {
-        // Après réinitialisation de row0, reconfigurer avec les valeurs par défaut
-        // Row0 (GPIO4): [profileswitch, /, *, 0] - 4 éléments (cols 0,1,2,3)
-        config.profiles[config.activeProfileIndex].keys[0].type = "profile";  // Row0, Col0 = Profile switch
-        config.profiles[config.activeProfileIndex].keys[0].value = "switch";
-        config.profiles[config.activeProfileIndex].keys[1].type = "key";  // Row0, Col1 = "/"
-        config.profiles[config.activeProfileIndex].keys[1].value = "/";
-        config.profiles[config.activeProfileIndex].keys[2].type = "key";  // Row0, Col2 = "*"
-        config.profiles[config.activeProfileIndex].keys[2].value = "*";
-        config.profiles[config.activeProfileIndex].keys[3].type = "key";  // Row0, Col3 = "0"
-        config.profiles[config.activeProfileIndex].keys[3].value = "0";
-        
-        saveConfigToFlash();
-        DEBUG_PRINTLN("[CONFIG] Row0 réinitialisée et sauvegardée");
     }
     
     // Continuer avec la configuration des autres rows si c'était un reset complet
     if (config.profileCount == 0 || forceReset) {
-        // Row1 (GPIO5): [7, 8, 9, +] - 4 éléments (cols 0,1,2,3)
-        config.profiles[0].keys[4].type = "key";  // Row1, Col0 = "7"
+        // Row1 (GPIO5): [7, 8, 9, +] -> indices 4,5,6,7
+        config.profiles[0].keys[4].type = "key";  // r1c0 = "7" (index 4)
         config.profiles[0].keys[4].value = "7";
-        config.profiles[0].keys[5].type = "key";  // Row1, Col1 = "8"
+        config.profiles[0].keys[5].type = "key";  // r1c1 = "8" (index 5)
         config.profiles[0].keys[5].value = "8";
-        config.profiles[0].keys[6].type = "key";  // Row1, Col2 = "9"
+        config.profiles[0].keys[6].type = "key";  // r1c2 = "9" (index 6)
         config.profiles[0].keys[6].value = "9";
-        config.profiles[0].keys[7].type = "key";  // Row1, Col3 = "+"
+        config.profiles[0].keys[7].type = "key";  // r1c3 = "+" (index 7)
         config.profiles[0].keys[7].value = "+";
         
-        // Row2 (GPIO6): [5, 6, 7] - 3 éléments (cols 0,1,2)
-        config.profiles[0].keys[8].type = "key";  // Row2, Col0 = "5"
-        config.profiles[0].keys[8].value = "5";
-        config.profiles[0].keys[9].type = "key";  // Row2, Col1 = "6"
-        config.profiles[0].keys[9].value = "6";
-        config.profiles[0].keys[10].type = "key";  // Row2, Col2 = "7"
-        config.profiles[0].keys[10].value = "7";
+        // Row2 (GPIO6): [4, 5, 6] -> indices 8,9,10
+        config.profiles[0].keys[8].type = "key";  // r2c0 = "4" (index 8)
+        config.profiles[0].keys[8].value = "4";
+        config.profiles[0].keys[9].type = "key";  // r2c1 = "5" (index 9)
+        config.profiles[0].keys[9].value = "5";
+        config.profiles[0].keys[10].type = "key";  // r2c2 = "6" (index 10)
+        config.profiles[0].keys[10].value = "6";
         
-        // Row3 (GPIO7): [1, 2, 3, =] - 4 éléments (cols 0,1,2,3)
-        config.profiles[0].keys[12].type = "key";  // Row3, Col0 = "1"
-        config.profiles[0].keys[12].value = "1";
-        config.profiles[0].keys[13].type = "key";  // Row3, Col1 = "2"
-        config.profiles[0].keys[13].value = "2";
-        config.profiles[0].keys[14].type = "key";  // Row3, Col2 = "3"
-        config.profiles[0].keys[14].value = "3";
-        config.profiles[0].keys[15].type = "key";  // Row3, Col3 = "="
-        config.profiles[0].keys[15].value = "=";
+        // Row3 (GPIO7): [1, 2, 3, =] -> indices 11,12,13,14
+        config.profiles[0].keys[11].type = "key";  // r3c0 = "1" (index 11)
+        config.profiles[0].keys[11].value = "1";
+        config.profiles[0].keys[12].type = "key";  // r3c1 = "2" (index 12)
+        config.profiles[0].keys[12].value = "2";
+        config.profiles[0].keys[13].type = "key";  // r3c2 = "3" (index 13)
+        config.profiles[0].keys[13].value = "3";
+        config.profiles[0].keys[14].type = "key";  // r3c3 = "=" (index 14)
+        config.profiles[0].keys[14].value = "=";
         
-        // Row4 (GPIO15): [0, .] - 2 éléments (cols 0,2)
-        config.profiles[0].keys[16].type = "key";  // Row4, Col0 = "0"
-        config.profiles[0].keys[16].value = "0";
-        config.profiles[0].keys[18].type = "key";  // Row4, Col2 = "."
-        config.profiles[0].keys[18].value = ".";
+        // Row4 (GPIO15): [0, .] -> indices 15,16 (seulement col 0 et col 2)
+        config.profiles[0].keys[15].type = "key";  // r4c0 = "0" (index 15)
+        config.profiles[0].keys[15].value = "0";
+        config.profiles[0].keys[16].type = "key";  // r4c2 = "." (index 16)
+        config.profiles[0].keys[16].value = ".";
         
+        // Sauvegarder immédiatement après configuration
         saveConfigToFlash();
-    }
+        delay(50);  // Délai pour s'assurer que la sauvegarde est terminée
+        
+        // Vérifier que les valeurs sont bien sauvegardées en les rechargant
+        DEBUG_PRINTLN("[CONFIG] Configuration sauvegardée, vérification...");
+        for (int i = 0; i <= 16; i++) {
+            DEBUG_PRINTF("[CONFIG] Key[%d]: type='%s', value='%s'\n", 
+                i, 
+                config.profiles[0].keys[i].type.c_str(),
+                config.profiles[0].keys[i].value.c_str());
+        }
     } else {
         // Charger chaque profil
         for (int i = 0; i < config.profileCount && i < MAX_PROFILES; i++) {
@@ -1609,6 +1627,79 @@ void saveConfigToFlash() {
     preferences.putString(PREF_OUTPUT_MODE, config.outputMode);
     
     // Serial.println("Config saved to flash successfully");  // DÉSACTIVÉ
+}
+
+// Envoyer la configuration actuelle (chargée depuis la flash) à l'interface web
+void sendConfigToWeb() {
+    StaticJsonDocument<4096> doc;
+    
+    // Créer l'objet profiles avec tous les profils chargés depuis la flash
+    JsonObject profilesObj = doc.createNestedObject("profiles");
+    
+    for (int i = 0; i < config.profileCount && i < MAX_PROFILES; i++) {
+        Profile& profile = config.profiles[i];
+        
+        // Créer l'objet pour ce profil
+        JsonObject profileObj = profilesObj.createNestedObject(profile.name);
+        
+        // Créer l'objet keys pour ce profil
+        JsonObject keysObj = profileObj.createNestedObject("keys");
+        
+        // Ajouter toutes les touches configurées
+        for (int j = 0; j < TOTAL_KEYS; j++) {
+            KeyConfig& key = profile.keys[j];
+            if (key.type == "") continue;  // Ignorer les touches non configurées
+            
+            String keyId = getKeyIdFromIndex(j);
+            JsonObject keyObj = keysObj.createNestedObject(keyId);
+            
+            keyObj["type"] = key.type;
+            keyObj["value"] = key.value;
+            
+            // Ajouter les modificateurs si présents
+            if (key.modifierCount > 0) {
+                JsonArray mods = keyObj.createNestedArray("modifiers");
+                for (int k = 0; k < key.modifierCount; k++) {
+                    mods.add(key.modifiers[k]);
+                }
+            }
+            
+            // Ajouter la macro si présente
+            if (key.macroCount > 0) {
+                JsonArray macro = keyObj.createNestedArray("macro");
+                for (int k = 0; k < key.macroCount; k++) {
+                    macro.add(key.macro[k]);
+                }
+                keyObj["delay"] = key.delay;
+            }
+        }
+    }
+    
+    // Ajouter le profil actif
+    if (config.activeProfileIndex >= 0 && config.activeProfileIndex < config.profileCount) {
+        doc["activeProfile"] = config.profiles[config.activeProfileIndex].name;
+    }
+    
+    // Sérialiser et envoyer
+    String output;
+    serializeJson(doc, output);
+    
+    DEBUG_WEB_PRINTF("[WEB_UI] Sending config from flash: %s\n", output.c_str());
+    
+    // Envoyer via Bluetooth Serial si connecté
+    #ifdef USE_BLE_KEYBOARD
+    if (deviceConnected && pSerialCharacteristic != nullptr) {
+        // Préfixer avec le type pour que l'interface web reconnaisse le message
+        String message = "{\"type\":\"config\",";
+        // Ajouter le contenu sans le premier '{'
+        message += output.substring(1);
+        message += "\n";
+        pSerialCharacteristic->setValue(message.c_str());
+        pSerialCharacteristic->notify();
+    }
+    #endif
+    
+    // Note: Si vous utilisez aussi WiFi/WebSocket, ajoutez l'envoi ici
 }
 
 String serializeProfileToString(Profile& profile) {
@@ -1702,10 +1793,36 @@ void parseProfileFromString(String json, Profile& profile) {
 }
 
 String getKeyIdFromIndex(int index) {
-    // Convertir l'index en ID de touche (ex: 0 -> "0-0", 1 -> "0-1", 2 -> "1-0", 3 -> "1-1")
-    int row = index / MATRIX_COLS;
-    int col = index % MATRIX_COLS;
-    return String(row) + "-" + String(col);
+    // Convertir l'index en ID de touche selon le mapping réel
+    // Row0: indices 0,1,2,3 -> "0-0", "0-1", "0-2", "0-3"
+    // Row1: indices 4,5,6,7 -> "1-0", "1-1", "1-2", "1-3"
+    // Row2: indices 8,9,10 -> "2-0", "2-1", "2-2"
+    // Row3: indices 11,12,13,14 -> "3-0", "3-1", "3-2", "3-3"
+    // Row4: indices 15,16 -> "4-0", "4-2"
+    
+    if (index < 0 || index > 16) return "-1";
+    
+    if (index <= 3) {
+        // Row0: 0-3
+        return "0-" + String(index);
+    } else if (index <= 7) {
+        // Row1: 4-7
+        return "1-" + String(index - 4);
+    } else if (index <= 10) {
+        // Row2: 8-10
+        return "2-" + String(index - 8);
+    } else if (index <= 14) {
+        // Row3: 11-14
+        return "3-" + String(index - 11);
+    } else if (index == 15) {
+        // Row4: index 15 = r4c0
+        return "4-0";
+    } else if (index == 16) {
+        // Row4: index 16 = r4c2
+        return "4-2";
+    }
+    
+    return "-1";
 }
 
 int getIndexFromKeyId(String keyId) {
@@ -1722,12 +1839,12 @@ int getIndexFromKeyId(String keyId) {
         return -1;  // Position invalide
     }
     
-    // Mapping selon la structure réelle:
-    // Row0 (indices 0-3): [0-0, 0-1, 0-2, 0-3] -> indices 0, 1, 2, 3
-    // Row1 (indices 4-7): [1-0, 1-1, 1-2, 1-3] -> indices 4, 5, 6, 7
-    // Row2 (indices 8-10): [2-0, 2-1, 2-2] -> indices 8, 9, 10 (pas de 2-3)
-    // Row3 (indices 12-15): [3-0, 3-1, 3-2, 3-3] -> indices 12, 13, 14, 15 (pas de 11)
-    // Row4 (indices 16, 18): [4-0, 4-2] -> indices 16, 18 (pas de 4-1, 4-3)
+    // Mapping simple et direct: row/col -> index séquentiel
+    // Row0: [r0c0, r0c1, r0c2, r0c3] -> indices 0, 1, 2, 3
+    // Row1: [r1c0, r1c1, r1c2, r1c3] -> indices 4, 5, 6, 7
+    // Row2: [r2c0, r2c1, r2c2] -> indices 8, 9, 10
+    // Row3: [r3c0, r3c1, r3c2, r3c3] -> indices 11, 12, 13, 14
+    // Row4: [r4c0, r4c2] -> indices 15, 16 (pas de col 1 et 3)
     
     if (row == 0) {
         return col;  // 0-3
@@ -1737,10 +1854,10 @@ int getIndexFromKeyId(String keyId) {
         if (col >= 3) return -1;  // Row2 n'a que 3 colonnes
         return 8 + col;  // 8-10
     } else if (row == 3) {
-        return 12 + col;  // 12-15 (on saute l'index 11)
+        return 11 + col;  // 11-14
     } else if (row == 4) {
-        if (col == 0) return 16;
-        else if (col == 2) return 18;
+        if (col == 0) return 15;   // r4c0 = "0" (index 15)
+        else if (col == 2) return 16;  // r4c2 = "." (index 16)
         else return -1;  // Row4 n'a que col 0 et col 2
     }
     
@@ -2167,7 +2284,7 @@ void handleDisplayImage(JsonObject& imageObj) {
         if (decodedLength > 0 && decodedLength <= ST7789_IMAGE_SIZE) {
             uint8_t* decodedData = (uint8_t*)malloc(decodedLength);
             if (decodedData) {
-                base64_decode((char*)decodedData, (char*)imageDataStr.c_str(), imageDataStr.length());
+                base64_decode(decodedData, (char*)imageDataStr.c_str(), imageDataStr.length());
                 
                 // Allouer le buffer si nécessaire
                 if (total == 1) {

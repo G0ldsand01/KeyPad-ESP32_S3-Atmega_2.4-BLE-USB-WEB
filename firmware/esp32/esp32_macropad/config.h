@@ -29,14 +29,9 @@
 #define CMD_SET_DISPLAY_BRIGHTNESS 0x06  // Définir la luminosité de l'écran (0-255)
 #define CMD_SET_DISPLAY_MODE 0x07  // Définir le mode d'affichage (data/image/gif)
 #define CMD_SET_DISPLAY_IMAGE 0x08  // Envoyer une image RGB565 (transmission par chunks)
-#define CMD_SET_DISPLAY_IMAGE_CHUNK 0x09  // Envoyer un chunk d'image (suivi de chunk_index, chunk_size, data)
+ #define CMD_SET_DISPLAY_IMAGE_CHUNK 0x09  // Envoyer un chunk d'image (suivi de chunk_index, chunk_size, data)
 #define CMD_SET_ATMEGA_DEBUG 0x0A  // Activer/désactiver le debug UART sur l'ATmega
 #define CMD_SET_ATMEGA_LOG_LEVEL 0x0B  // Définir le niveau de log de l'ATmega
-
-// Capteur d'empreinte
-//#define FINGERPRINT_RX 16
-//#define FINGERPRINT_TX 17
-//#define FINGERPRINT_BAUDRATE 57600
 
 // Matrice de touches - Gestion directe par ESP32
 #define MATRIX_COL0 16   // GPIO 16 = Colonne 0
