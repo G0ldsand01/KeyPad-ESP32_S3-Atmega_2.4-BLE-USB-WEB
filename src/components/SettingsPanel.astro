@@ -88,6 +88,31 @@
     </div>
   </div>
 
+  <div class="form-group">
+    <label>Mise à jour OTA (Over-The-Air)</label>
+    <div class="settings-section">
+      <div class="form-group">
+        <label for="ota-file-input">Fichier firmware (.py):</label>
+        <input type="file" id="ota-file-input" accept=".py" class="form-control">
+        <small class="form-hint">Sélectionnez le fichier main.py à téléverser</small>
+      </div>
+      
+      <div class="form-group">
+        <button id="ota-update-btn" class="btn btn-primary">
+          <i data-lucide="upload" class="btn-icon"></i>
+          <span>Mettre à jour le firmware</span>
+        </button>
+      </div>
+      
+      <div id="ota-progress" style="display: none;">
+        <div class="progress-bar-container">
+          <div class="progress-bar" id="ota-progress-bar" style="width: 0%"></div>
+        </div>
+        <small id="ota-progress-text">0%</small>
+      </div>
+    </div>
+  </div>
+
   <div class="button-group">
     <button id="apply-settings-btn" class="btn btn-primary">
       <i data-lucide="save" class="btn-icon"></i>

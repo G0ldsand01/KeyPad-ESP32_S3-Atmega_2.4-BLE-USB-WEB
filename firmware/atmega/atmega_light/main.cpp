@@ -21,6 +21,7 @@
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <avr/wdt.h>
 #include <util/delay.h>
 #include <string.h>
 
@@ -46,8 +47,10 @@
 #define CMD_SET_ATMEGA_LOG_LEVEL 0x0B  // Définir le niveau de log de l'ATmega
 
 // Configuration ST7789
+// Pour un écran 1.9" 170x320, utiliser 170 comme hauteur
+// Si il y a du bruit en bas, essayer 172 ou ajuster les offsets
 #define ST7789_WIDTH 320
-#define ST7789_HEIGHT 170
+#define ST7789_HEIGHT 210
 #define ST7789_CS_PORT PORTB
 #define ST7789_CS_DDR DDRB
 #define ST7789_CS_PIN PB2
@@ -97,6 +100,7 @@ volatile char display_profile[32] = "Profile 1";
 volatile char display_output_mode[16] = "usb";
 volatile uint8_t display_keys_count = 0;
 volatile uint8_t display_backlight_enabled = 0;
+volatile char display_last_key[16] = "";  // Dernière touche appuyée
 volatile uint8_t display_backlight_brightness = 0;
 volatile char display_custom1[32] = "";
 volatile char display_custom2[32] = "";
@@ -109,37 +113,37 @@ volatile uint8_t display_initialized = 0;  // Flag: 1 si l'affichage a été ini
 volatile uint8_t debug_enabled = 0;  // 0 = désactivé, 1 = activé
 volatile uint8_t log_level = 2;  // 0 = none, 1 = error, 2 = info, 3 = debug
 
-// Debug: Utiliser UART pour les messages de débogage (optionnel)
-// Note: Nécessite un convertisseur USB-UART pour voir les messages
-// #define DEBUG_UART
-#ifdef DEBUG_UART
-#include <avr/io.h>
-#define DEBUG_BAUD 9600
-#define DEBUG_UBRR (F_CPU / 16 / DEBUG_BAUD - 1)
+// Prototype de uart_send_byte (déclaré avant debug_print pour éviter les erreurs de compilation)
+void uart_send_byte(uint8_t data);
+
+// Debug: Utiliser l'UART principal (vers ESP32) pour les messages de débogage
+// Tous les messages debug_print() seront envoyés sur l'UART principal (115200 baud)
+// L'ESP32 pourra les recevoir et les logger
 void debug_init(void) {
-    UBRR0H = (uint8_t)(DEBUG_UBRR >> 8);
-    UBRR0L = (uint8_t)DEBUG_UBRR;
-    UCSR0B = (1 << TXEN0);  // Enable transmitter
-    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);  // 8 data bits
+    // Pas besoin d'initialiser ici, l'UART principal est déjà initialisé dans uart_init()
+    // Cette fonction existe juste pour compatibilité
 }
+
+// Envoyer un string sur l'UART principal (vers ESP32)
 void debug_print(const char* str) {
     while (*str) {
-        while (!(UCSR0A & (1 << UDRE0)));  // Wait for empty transmit buffer
-        UDR0 = *str++;
+        uart_send_byte(*str++);
     }
 }
+
+// Envoyer une valeur hexadécimale sur l'UART principal
 void debug_print_hex(uint8_t val) {
     char hex[] = "0123456789ABCDEF";
-    while (!(UCSR0A & (1 << UDRE0)));
-    UDR0 = hex[(val >> 4) & 0x0F];
-    while (!(UCSR0A & (1 << UDRE0)));
-    UDR0 = hex[val & 0x0F];
+    uart_send_byte(hex[(val >> 4) & 0x0F]);
+    uart_send_byte(hex[val & 0x0F]);
 }
+
+// Envoyer une valeur décimale sur l'UART principal
 void debug_print_dec(uint16_t val) {
     char buf[6];
     uint8_t i = 0;
     if (val == 0) {
-        debug_print("0");
+        uart_send_byte('0');
         return;
     }
     while (val > 0 && i < 5) {
@@ -147,16 +151,9 @@ void debug_print_dec(uint16_t val) {
         val /= 10;
     }
     while (i > 0) {
-        while (!(UCSR0A & (1 << UDRE0)));
-        UDR0 = buf[--i];
+        uart_send_byte(buf[--i]);
     }
 }
-#else
-#define debug_init()
-#define debug_print(x)
-#define debug_print_hex(x)
-#define debug_print_dec(x)
-#endif
 
 // Macros conditionnelles pour le debug selon le niveau
 #define LOG_ERROR(x) do { if (debug_enabled && log_level >= 1) debug_print(x); } while(0)
@@ -175,8 +172,10 @@ void st7789_update_display(void);
 void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg_color);
 void st7789_draw_text(uint16_t x, uint16_t y, const char* text, uint16_t color, uint16_t bg_color);
 void processUartCommand(void);
-void uart_send_byte(uint8_t data);
 void uart_send_response(uint8_t cmd, uint8_t* data, uint8_t len);
+void uart_send_light_ascii(void);
+void display_light_level_on_screen(uint16_t value);
+void display_simple_info(void);
 
 // Initialiser ADC pour TEMT6000
 void adc_init(void) {
@@ -284,91 +283,34 @@ void st7789_init(void) {
     _delay_ms(10);
     
     // Memory access control (orientation)
-    // Pour un écran 1.9" 170x320, rotation 180°
+    // Pour un écran 1.9" 170x320 en mode landscape, connecteur à droite
     st7789_write_cmd(ST7789_MADCTL);
-    // Bits MADCTL: MY=0, MX=0, MV=1, ML=0, RGB=0, MH=0
+    // Essayer différentes valeurs pour trouver la bonne rotation
     // 0x00 = Normal (portrait, RGB order)
-    // 0x08 = Mirror Y (MY=1)
-    // 0x40 = Mirror X (MX=1)
-    // 0x20 = Mirror X+Y (MY=1, MX=1)
-    // 0x60 = 90° rotation (MV=1, landscape)
+    // 0x60 = 90° rotation (MV=1, landscape, connecteur à gauche)
+    // 0xA0 = 270° rotation (MV=1, MY=1, landscape, connecteur à droite)
     // 0xC0 = 180° rotation (MY=1, MX=1)
-    // 0xA0 = 270° rotation (MV=1, MY=1)
-    st7789_write_data(0x60);  // Rotation 90° (MV=1, landscape)
+    st7789_write_data(0xA0);  // Rotation 270° : landscape avec connecteur à droite
     _delay_ms(10);
     
-    // Inversion des couleurs - ESSENTIEL pour certains écrans ST7789
-    // Essayer INVOFF d'abord (pas d'inversion)
-    st7789_write_cmd(ST7789_INVOFF);  // Pas d'inversion des couleurs
+    // Inversion des couleurs - INVON pour que 0x0000 soit noir
+    // Si le fond est blanc/rose avec INVOFF, utiliser INVON
+    st7789_write_cmd(ST7789_INVON);  // Inversion des couleurs activée
     _delay_ms(10);
     
     // Activer l'affichage
     st7789_write_cmd(ST7789_DISPON);
     _delay_ms(100);  // Délai plus long pour s'assurer que l'écran est prêt
     
-    // Effacer l'écran avec un fond noir au boot
-    // Utiliser une approche plus directe : définir la fenêtre et envoyer des pixels noirs
+    // CRITIQUE: Remplir TOUT l'écran en noir avec fill_screen (plus fiable)
     uint16_t black = 0x0000;  // Noir RGB565
-    st7789_set_window(0, 0, ST7789_WIDTH - 1, ST7789_HEIGHT - 1);
-    
-    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
-    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
-    
-    // Envoyer des pixels noirs pour tout l'écran
-    uint8_t black_high = (black >> 8) & 0xFF;
-    uint8_t black_low = black & 0xFF;
-    for (uint32_t i = 0; i < ((uint32_t)ST7789_WIDTH * ST7789_HEIGHT); i++) {
-        spi_write(black_low);
-        spi_write(black_high);
-    }
-    
-    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
-    _delay_ms(200);
-    
-    // Test: Dessiner un grand rectangle blanc pour vérifier que l'affichage fonctionne
-    uint16_t white = 0xFFFF;  // Blanc RGB565
-    st7789_fill_rect(0, 0, ST7789_WIDTH, 50, white);  // Rectangle blanc en haut de l'écran
-    _delay_ms(300);
-    
-    // Effacer à nouveau pour avoir un fond noir propre
-    st7789_set_window(0, 0, ST7789_WIDTH - 1, ST7789_HEIGHT - 1);
-    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
-    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
-    for (uint32_t i = 0; i < ((uint32_t)ST7789_WIDTH * ST7789_HEIGHT); i++) {
-        spi_write(black_low);
-        spi_write(black_high);
-    }
-    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
-    _delay_ms(200);
-    
-    // Afficher le texte en haut à gauche (10px du top, 20px de gauche)
-    uint16_t text_x = 20;  // 20px de gauche
-    uint16_t text_y = 10;  // 10px du top
-    
-    // Afficher "WELCOME TO MY KEYPAD" (en majuscules car la police ne supporte que A-Z)
-    st7789_draw_text(text_x, text_y, "WELCOME TO MY KEYPAD", white, black);
+    st7789_fill_screen(black);  // Utiliser fill_screen pour être sûr que tout est noir
     _delay_ms(50);
     
-    // Afficher l'état de connexion sur la ligne suivante
-    uint16_t conn_y = text_y + 10;  // 10 pixels sous le premier texte
-    st7789_draw_text(text_x, conn_y, "CONNECTION : ", white, black);
-    _delay_ms(50);
+    // Afficher les informations simplifiées
+    display_simple_info();
     
-    // Déterminer l'état de connexion
-    // Par défaut, on affiche "IDLE" jusqu'à ce qu'on reçoive une mise à jour de l'ESP32
-    const char* conn_status = "IDLE";
-    if (strcmp((char*)display_output_mode, "usb") == 0) {
-        conn_status = "USB";
-    } else if (strcmp((char*)display_output_mode, "bluetooth") == 0) {
-        conn_status = "BLUETOOTH";
-    }
-    
-    // Afficher le statut de connexion (position après "CONNECTION : ")
-    uint16_t status_x = text_x + (13 * 6);  // 13 caractères * 6 pixels = 78 pixels
-    st7789_draw_text(status_x, conn_y, conn_status, white, black);
-    _delay_ms(200);
-    
-    // Marquer que l'affichage Welcome a été initialisé
+    // Marquer que l'affichage a été initialisé
     display_initialized = 1;
     
     debug_print("ST7789 initialized\r\n");
@@ -376,6 +318,7 @@ void st7789_init(void) {
 
 // Définir la fenêtre d'affichage
 void st7789_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    // Pas d'offset - utiliser les coordonnées directement
     st7789_write_cmd(ST7789_CASET);
     st7789_write_data(x0 >> 8);
     st7789_write_data(x0 & 0xFF);
@@ -405,12 +348,12 @@ void st7789_fill_screen(uint16_t color) {
     
     // Dessiner pixel par pixel pour éviter l'overflow
     // 320*170 = 54400 pixels (OK pour uint16_t)
-    // Avec rotation 90°, tester l'ordre inversé (low puis high)
+    // Essayer l'ordre normal (high puis low) - certains écrans ST7789 nécessitent cet ordre
     for (uint16_t y = 0; y < ST7789_HEIGHT; y++) {
         for (uint16_t x = 0; x < ST7789_WIDTH; x++) {
-            // Essayer l'ordre inversé (low puis high) - certains écrans ST7789 nécessitent cet ordre
-            spi_write(color_low);
+            // Ordre normal (high puis low) pour RGB565 - test pour corriger le fond blanc/rose
             spi_write(color_high);
+            spi_write(color_low);
         }
     }
     
@@ -430,10 +373,10 @@ void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t c
     ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
     ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
     
-    // Utiliser l'ordre inversé (low puis high) pour correspondre à fill_screen
+    // Utiliser l'ordre normal (high puis low) pour correspondre à fill_screen
     for (uint16_t i = 0; i < w * h; i++) {
-        spi_write(color_low);
         spi_write(color_high);
+        spi_write(color_low);
     }
     
     ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
@@ -549,7 +492,25 @@ void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t b
         return;
     }
     
-    // Vérifier si le caractère est dans la plage ASCII imprimable
+    // Convertir les minuscules en majuscules (la police ne supporte que A-Z)
+    if (c >= 'a' && c <= 'z') {
+        c = c - 'a' + 'A';
+    }
+    
+    // Remplacer les caractères accentués par leurs équivalents
+    if (c == 233 || c == 232 || c == 234 || c == 235) {  // é, è, ê, ë
+        c = 'E';
+    } else if (c == 224 || c == 225 || c == 226 || c == 227) {  // à, á, â, ã
+        c = 'A';
+    } else if (c == 249 || c == 250 || c == 251 || c == 252) {  // ù, ú, û, ü
+        c = 'U';
+    } else if (c == 239 || c == 238 || c == 237 || c == 236) {  // ï, î, í, ì
+        c = 'I';
+    } else if (c == 242 || c == 243 || c == 244 || c == 245) {  // ò, ó, ô, õ
+        c = 'O';
+    }
+    
+    // Vérifier si le caractère est dans la plage ASCII imprimable (32-90 = espace à Z)
     if (c < 32 || c > 90) {
         return;  // Caractère non supporté
     }
@@ -591,24 +552,22 @@ void st7789_update_display(void) {
         return;  // L'image est déjà affichée, ne pas l'écraser
     }
     
-    // Afficher le Welcome avec le statut de connexion
-    // Effacer l'écran avec un fond noir - faire plusieurs fois pour être sûr
-    uint16_t black = 0x0000;  // Noir RGB565
+    uint16_t black = 0xFFFF;  // Noir RGB565
     for (uint8_t i = 0; i < 2; i++) {
         st7789_fill_screen(black);
         _delay_ms(10);
     }
     
-    // Afficher le texte en haut à gauche (10px du top, 20px de gauche)
-    uint16_t text_x = 20;  // 20px de gauche
-    uint16_t text_y = 10;  // 10px du top
+    // Afficher le texte plus bas pour qu'il soit bien visible en landscape
+    uint16_t text_x = 40;  // 40px de gauche
+    uint16_t text_y = 150;  // 150px du top (au lieu de 10)
     uint16_t white = 0xFFFF;  // Blanc RGB565
     
     // Afficher "WELCOME TO MY KEYPAD" (en majuscules car la police ne supporte que A-Z)
     st7789_draw_text(text_x, text_y, "WELCOME TO MY KEYPAD", white, black);
     
     // Afficher l'état de connexion sur la ligne suivante
-    uint16_t conn_y = text_y + 10;  // 10 pixels sous le premier texte
+    uint16_t conn_y = text_y + 12;  // un peu plus bas que le premier texte
     st7789_draw_text(text_x, conn_y, "CONNECTION : ", white, black);
     
     // Déterminer l'état de connexion
@@ -738,10 +697,23 @@ void uart_init(void) {
 }
 
 int main(void) {
-    // Initialiser le débogage UART (si activé)
+    // CRITIQUE: Désactiver le watchdog timer au démarrage (si activé)
+    // Le watchdog peut causer des resets si non désactivé
+    MCUSR &= ~(1 << WDRF);  // Clear watchdog reset flag
+    wdt_disable();  // Désactiver le watchdog
+    
+    // Délai initial pour stabilisation de l'alimentation
+    _delay_ms(200);  // Délai plus long pour stabilisation au boot
+    
+    // IMPORTANT: Initialiser l'UART EN PREMIER pour que debug_print() fonctionne
+    uart_init();
+    _delay_ms(100);  // Attendre que l'UART soit stable
+    
+    // Initialiser le débogage (utilise maintenant l'UART principal)
     debug_init();
     debug_print("\r\n=== ATmega328P Light Controller ===\r\n");
     debug_print("UART Baud: 115200\r\n");
+    debug_print("Boot sequence started...\r\n");
     
     // Initialiser les périphériques
     adc_init();
@@ -753,13 +725,19 @@ int main(void) {
     spi_init();
     debug_print("SPI initialized\r\n");
     
+    // Délai avant initialisation de l'écran pour s'assurer que l'alimentation est stable
+    _delay_ms(100);
     st7789_init();
+    
+    // Premier dessin dans main(): rectangle noir de la taille de l'écran
+    st7789_fill_rect(0, 0, ST7789_WIDTH, ST7789_HEIGHT, 0x0000);
     debug_print("ST7789 initialized\r\n");
     
     // Initialiser les valeurs d'affichage par défaut
     strcpy((char*)display_mode, "data");
     strcpy((char*)display_profile, "Profile 1");
-    strcpy((char*)display_output_mode, "usb");
+    // Par défaut, l'ESP32 utilise le HID BLE (pas USB), donc on affiche BLUETOOTH
+    strcpy((char*)display_output_mode, "bluetooth");
     display_keys_count = 0;
     display_backlight_enabled = 0;
     display_backlight_brightness = 0;
@@ -768,7 +746,6 @@ int main(void) {
     // Ne pas appeler st7789_update_display() ici - l'affichage Welcome est déjà fait dans st7789_init()
     // On attendra qu'une commande UART demande explicitement une mise à jour
     
-    uart_init();
     debug_print("UART initialized\r\n");
     
     // Activer interruptions globales
@@ -776,39 +753,395 @@ int main(void) {
     debug_print("Interrupts enabled\r\n");
     debug_print("Ready!\r\n");
     
-    // Boucle principale
+    // Boucle principale - optimisée pour la réactivité
     while (1) {
-        // Lire la luminosité toutes les 100ms
-        uint16_t new_light = adc_read();
-        if (new_light != light_level) {
-            light_level = new_light;
+        // Traiter les commandes UART en priorité (non-bloquant)
+        processUartCommand();
+        
+        // Lire la luminosité toutes les ~20ms (au lieu de 100ms)
+        static uint8_t adc_counter = 0;
+        adc_counter++;
+        if (adc_counter >= 5) {  // ~100ms (5 * 20ms) pour l'ADC
+            adc_counter = 0;
+            uint16_t new_light = adc_read();
+            if (new_light != light_level) {
+                light_level = new_light;
+                
+                // Contrôle automatique du rétro-éclairage et de la LED selon la luminosité
+                // Si luminosité < 200 : activer backlight et LED
+                // Si luminosité >= 200 : désactiver backlight et LED
+                static uint8_t last_backlight_state = 0xFF;  // Pour détecter les changements
+                uint8_t backlight_changed = 0;
+                
+                if (light_level < 200) {
+                    // Activer le rétro-éclairage
+                    if (!display_backlight_enabled) {
+                        display_backlight_enabled = 1;
+                        display_backlight_brightness = 255;  // Luminosité maximale
+                        backlight_changed = 1;
+                    }
+                    // Activer la LED avec une luminosité adaptée (plus la lumière est faible, plus la LED est forte)
+                    // Inverser : light_level faible (0-199) → LED forte (255-128)
+                    uint8_t led_level = 255 - ((light_level * 127) / 199);
+                    if (led_level < 128) led_level = 128;  // Minimum 50% pour être visible
+                    set_led_brightness(led_level);
+                } else {
+                    // Désactiver le rétro-éclairage
+                    if (display_backlight_enabled) {
+                        display_backlight_enabled = 0;
+                        display_backlight_brightness = 0;
+                        backlight_changed = 1;
+                    }
+                    // Désactiver la LED
+                    set_led_brightness(0);
+                }
+                
+                // Mettre à jour l'affichage si le backlight a changé
+                if (backlight_changed && last_backlight_state != display_backlight_enabled) {
+                    last_backlight_state = display_backlight_enabled;
+                    // Forcer la mise à jour de l'affichage immédiatement
+                    display_simple_info();
+                }
+            }
+        }
+        
+        // Rafraîchissement d'affichage de la lumière - toutes les ~200ms
+        static uint16_t ui_counter = 0;
+        static uint16_t last_shown_light_ui = 0xFFFF;  // Initialiser à une valeur invalide pour forcer le premier affichage
+        ui_counter++;
+        if (ui_counter >= 10) {  // ~200 ms (10 * 20 ms)
+            ui_counter = 0;
+            uint16_t diff;
+            if (light_level > last_shown_light_ui) {
+                diff = light_level - last_shown_light_ui;
+            } else {
+                diff = last_shown_light_ui - light_level;
+            }
+            // Mettre à jour l'affichage simplifié si variation >= 5 ou première fois
+            if (diff >= 5 || last_shown_light_ui == 0xFFFF) {
+                display_simple_info();  // Afficher toutes les infos (inclut la luminosité)
+                last_shown_light_ui = light_level;
+            }
+        }
+        
+        // Envoyer la luminosité sur l'UART toutes les 1 seconde (~20ms * 50)
+        static uint16_t light_send_counter = 0;
+        light_send_counter++;
+        if (light_send_counter >= 50) {
+            light_send_counter = 0;
+            uart_send_light_ascii();
+        }
+        
+        // Envoyer un message de debug toutes les 5 secondes (réduit pour moins de spam)
+        static uint16_t debug_counter = 0;
+        debug_counter++;
+        if (debug_counter >= 250) {  // ~5 secondes (250 * 20ms)
+            debug_counter = 0;
             debug_print("[LIGHT] Level: ");
             debug_print_dec(light_level);
             debug_print(" (0x");
             debug_print_hex((uint8_t)(light_level >> 8));
             debug_print_hex((uint8_t)(light_level & 0xFF));
             debug_print(")\r\n");
-            
-            // Ne pas mettre à jour l'affichage automatiquement si on est encore en mode Welcome
-            // On attendra qu'une commande UART demande explicitement une mise à jour
-            // st7789_update_display();  // DÉSACTIVÉ - ne pas écraser le Welcome
         }
         
-        // Ne pas mettre à jour l'affichage périodiquement si on est encore en mode Welcome
-        // On attendra qu'une commande UART demande explicitement une mise à jour
-        // Note: millis() n'existe pas sur AVR, utiliser un compteur
-        // static uint16_t update_counter = 0;
-        // update_counter++;
-        // if (update_counter >= 10) {  // ~1 seconde (100ms * 10)
-        //     update_counter = 0;
-        //     st7789_update_display();  // DÉSACTIVÉ - ne pas écraser le Welcome
-        // }
-        
-        // Petit délai pour éviter de surcharger l'ADC
-        _delay_ms(100);
+        // Délai réduit pour améliorer la réactivité (20ms au lieu de 100ms)
+        _delay_ms(20);
     }
     
     return 0;
+}
+
+// Envoyer la luminosité actuelle en ASCII lisible sur l'UART (ex: "LIGHT=512\n")
+void uart_send_light_ascii(void) {
+    uint16_t value = light_level;
+    
+    // Prefixe
+    uart_send_byte('L');
+    uart_send_byte('I');
+    uart_send_byte('G');
+    uart_send_byte('H');
+    uart_send_byte('T');
+    uart_send_byte('=');
+    
+    // Conversion décimale (similaire à debug_print_dec mais sur l'UART principal)
+    char buf[6];
+    uint8_t i = 0;
+    if (value == 0) {
+        uart_send_byte('0');
+    } else {
+        while (value > 0 && i < 5) {
+            buf[i++] = '0' + (value % 10);
+            value /= 10;
+        }
+        while (i > 0) {
+            uart_send_byte(buf[--i]);
+        }
+    }
+    uart_send_byte('\n');
+}
+
+    // Afficher la valeur de luminosité sur l'écran ST7789
+void display_light_level_on_screen(uint16_t value) {
+    // Construire une chaîne "LIGHT: 0123"
+    char text[16];
+    text[0] = 'L';
+    text[1] = 'I';
+    text[2] = 'G';
+    text[3] = 'H';
+    text[4] = 'T';
+    text[5] = ':';
+    text[6] = ' ';
+    
+    // Conversion décimale dans text[7..]
+    char buf[6];
+    uint8_t i = 0;
+    uint16_t v = value;
+    if (v == 0) {
+        text[7] = '0';
+        text[8] = '\0';
+    } else {
+        while (v > 0 && i < 5) {
+            buf[i++] = '0' + (v % 10);
+            v /= 10;
+        }
+        uint8_t pos = 7;
+        while (i > 0 && pos < sizeof(text) - 1) {
+            text[pos++] = buf[--i];
+        }
+        text[pos] = '\0';
+    }
+    
+    // Couleurs simples
+    uint16_t black = 0x0000;
+    uint16_t cyan  = 0x07FF;
+    
+    // Afficher la luminosité juste sous la ligne "CONNECTION : ..."
+    // text_y = 40, conn_y = text_y + 12 = 52 → LIGHT vers ~64
+    uint16_t x = 20;
+    uint16_t y = 150;
+    uint16_t w = 300;  // Largeur limitée pour le texte (pas toute la largeur)
+    uint16_t h = 100;
+    
+    // Effacer uniquement la zone du texte (pas toute la largeur)
+    st7789_fill_rect(x, y, w, h, black);
+    
+    // Dessiner le texte "LIGHT: xxxx" en cyan
+    st7789_draw_text(x, y, text, cyan, black);
+    
+    // S'assurer que le reste de l'écran en bas est noir (protection contre le bruit)
+    // Effacer de y+h jusqu'en bas de l'écran
+    if (y + h < ST7789_HEIGHT) {
+        uint16_t clear_y = y + h;
+        uint16_t clear_h = ST7789_HEIGHT - clear_y;
+        st7789_fill_rect(0, clear_y, ST7789_WIDTH, clear_h, black);
+    }
+}
+
+// Afficher les informations simplifiées (comme dans l'image)
+void display_simple_info(void) {
+    static uint8_t first_call = 1;  // Flag pour la première fois
+    uint16_t black = 0x0000;
+    uint16_t white = 0xFFFF;
+    // Couleurs RGB565 - avec INVOFF, les valeurs sont normales
+    // Noir = 0x0000, Blanc = 0xFFFF
+    // Gris très foncé pour le fond du rectangle intérieur (légèrement plus clair que le noir)
+    uint16_t inner_bg = 0x1082;  // Gris très foncé RGB565 (presque noir mais pas 100%)
+    // Gris clair pour la bordure et le séparateur
+    uint16_t border_gray = 0x8410;  // Gris clair RGB565
+    uint16_t separator_gray = 0x8410;  // Gris clair RGB565
+    
+    // Fond noir pour tout l'écran - seulement la première fois
+    if (first_call) {
+        st7789_fill_screen(black);
+        first_call = 0;
+    }
+    
+    // Rectangle intérieur avec offset de 5px sur les côtés et 30px en haut
+    uint16_t offset = 5;
+    uint16_t offset_top = 30;  // Offset de 30px depuis le haut
+    uint16_t panel_x = offset;
+    uint16_t panel_y = offset_top;  // 30px depuis le haut
+    uint16_t panel_w = ST7789_WIDTH - (offset * 2);   // 320 - 10 = 310px
+    uint16_t panel_h = ST7789_HEIGHT - offset_top - offset;  // Hauteur = écran - offset haut - offset bas
+    
+    // Dessiner le fond du rectangle intérieur (gris très foncé) - toujours redessiner pour éviter les artefacts
+    st7789_fill_rect(panel_x, panel_y, panel_w, panel_h, inner_bg);
+    
+    // Dessiner les bordures grises à 5px des bords (sur les bords du rectangle intérieur)
+    // Bordure supérieure
+    st7789_fill_rect(panel_x, panel_y, panel_w, 1, border_gray);
+    // Bordure inférieure
+    st7789_fill_rect(panel_x, panel_y + panel_h - 1, panel_w, 1, border_gray);
+    // Bordure gauche
+    st7789_fill_rect(panel_x, panel_y, 1, panel_h, border_gray);
+    // Bordure droite
+    st7789_fill_rect(panel_x + panel_w - 1, panel_y, 1, panel_h, border_gray);
+    
+    // Centrer le contenu verticalement et horizontalement dans le rectangle intérieur
+    // Calculer la hauteur totale du contenu : profil + séparateur + 6 lignes d'info
+    uint16_t line_height = 16;
+    uint16_t separator_height = 1;
+    uint16_t spacing = 2;
+    // Profil (16) + espace (2) + séparateur (1) + espace (2) + 6 lignes (96) = 117px
+    uint16_t content_height = line_height + spacing + separator_height + spacing + (6 * line_height);
+    uint16_t vertical_offset = 1;  // Offset pour descendre tout le contenu
+    uint16_t start_y = panel_y + ((panel_h - content_height) / 2) + vertical_offset;  // Centrer dans le rectangle intérieur + offset
+    
+    // Marge horizontale pour le texte (centré horizontalement dans le rectangle intérieur)
+    uint16_t text_margin = 15;
+    uint16_t x = panel_x + text_margin;
+    uint16_t y = start_y;
+    
+    // Profil actuel en haut - convertir en majuscules pour l'affichage
+    char profile_text[32];
+    uint8_t pos = 0;
+    const char* profile_ptr = (char*)display_profile;
+    // Si le profil est vide, utiliser "PROFIL 1" par défaut
+    if (!profile_ptr || profile_ptr[0] == '\0') {
+        profile_ptr = "PROFIL 1";
+    }
+    while (*profile_ptr && pos < 31) {
+        char c = *profile_ptr++;
+        // Convertir en majuscule
+        if (c >= 'a' && c <= 'z') {
+            c = c - 'a' + 'A';
+        }
+        profile_text[pos++] = c;
+    }
+    profile_text[pos] = '\0';
+    // Afficher le profil même s'il est vide (affichera "PROFIL 1")
+    st7789_draw_text(x, y, profile_text, white, inner_bg);
+    y += line_height + spacing;  // Espace avant le séparateur
+    
+    // Séparateur centré (largeur de l'écran moins les marges)
+    uint16_t separator_width = panel_w - (text_margin * 2);
+    st7789_fill_rect(x, y, separator_width, separator_height, separator_gray);
+    y += separator_height + spacing;  // Espace après le séparateur
+    
+    // Mode de connexion - "MODE DE CONNECTION : BLUETOOTH" ou "USB" (tout en majuscules)
+    const char* conn_status = "IDLE";
+    if (strcmp((char*)display_output_mode, "usb") == 0) {
+        conn_status = "USB";
+    } else if (strcmp((char*)display_output_mode, "bluetooth") == 0) {
+        conn_status = "BLUETOOTH";
+    }
+    
+    // Construire "MODE DE CONNECTION : BLUETOOTH" ou "USB" (tout en majuscules)
+    char mode_text[48];
+    const char* mode_label = "MODE DE CONNECTION : ";
+    pos = 0;  // Réutiliser la variable pos déjà déclarée
+    const char* label_ptr = mode_label;
+    while (*label_ptr && pos < 47) {
+        mode_text[pos++] = *label_ptr++;
+    }
+    const char* mode_ptr = conn_status;
+    while (*mode_ptr && pos < 47) {
+        mode_text[pos++] = *mode_ptr++;
+    }
+    mode_text[pos] = '\0';
+    st7789_draw_text(x, y, mode_text, white, inner_bg);
+    y += line_height;
+    
+    // Dernière touche appuyée - "TOUCHE : {touche}" (tout en majuscules)
+    char last_key_text[48];
+    const char* last_key_label = "TOUCHE : ";
+    pos = 0;
+    label_ptr = last_key_label;
+    while (*label_ptr && pos < 47) {
+        last_key_text[pos++] = *label_ptr++;
+    }
+    const char* last_key_ptr = (char*)display_last_key;
+    if (!last_key_ptr || last_key_ptr[0] == '\0') {
+        last_key_ptr = "AUCUNE";
+    }
+    while (*last_key_ptr && pos < 47) {
+        char c = *last_key_ptr++;
+        // Convertir en majuscule
+        if (c >= 'a' && c <= 'z') {
+            c = c - 'a' + 'A';
+        }
+        last_key_text[pos++] = c;
+    }
+    last_key_text[pos] = '\0';
+    st7789_draw_text(x, y, last_key_text, white, inner_bg);
+    y += line_height;
+    
+    // Nombre de touches - "TOUCHE CONFIGURE : {touche}/20" (tout en majuscules, sans accent)
+    // Les touches viennent de l'ESP32 via display_keys_count
+    char keys_text[48];
+    const char* keys_label = "TOUCHE CONFIGURE : ";
+    pos = 0;
+    label_ptr = keys_label;
+    while (*label_ptr && pos < 47) {
+        keys_text[pos++] = *label_ptr++;
+    }
+    uint8_t keys_count = display_keys_count;  // Vient de l'ESP32 via UART
+    if (keys_count == 0) {
+        keys_text[pos++] = '0';
+    } else {
+        char buf[4];
+        uint8_t i = 0;
+        while (keys_count > 0 && i < 3) {
+            buf[i++] = '0' + (keys_count % 10);
+            keys_count /= 10;
+        }
+        while (i > 0 && pos < 47) {
+            keys_text[pos++] = buf[--i];
+        }
+    }
+    keys_text[pos++] = '/';
+    keys_text[pos++] = '2';
+    keys_text[pos++] = '0';
+    keys_text[pos] = '\0';
+    st7789_draw_text(x, y, keys_text, white, inner_bg);
+    y += line_height;
+    
+    // Rétro-éclairage - "RETRO-ECLAIRAGE : ON/OFF" (tout en majuscules, sans accent)
+    char backlight_text[48];
+    const char* backlight_label = "RETRO-ECLAIRAGE : ";
+    pos = 0;
+    label_ptr = backlight_label;
+    while (*label_ptr && pos < 47) {
+        backlight_text[pos++] = *label_ptr++;
+    }
+    if (display_backlight_enabled) {
+        backlight_text[pos++] = 'O';
+        backlight_text[pos++] = 'N';
+    } else {
+        backlight_text[pos++] = 'O';
+        backlight_text[pos++] = 'F';
+        backlight_text[pos++] = 'F';
+    }
+    backlight_text[pos] = '\0';
+    st7789_draw_text(x, y, backlight_text, white, inner_bg);
+    y += line_height;
+    
+    // Niveau de luminosité - "LUMINOSITE : XXXX" (tout en majuscules)
+    char light_text[48];
+    const char* light_label = "LUMINOSITE : ";
+    pos = 0;
+    label_ptr = light_label;
+    while (*label_ptr && pos < 47) {
+        light_text[pos++] = *label_ptr++;
+    }
+    // Convertir light_level en chaîne (0-1023)
+    uint16_t light_val = light_level;
+    if (light_val == 0) {
+        light_text[pos++] = '0';
+    } else {
+        char buf[5];
+        uint8_t i = 0;
+        while (light_val > 0 && i < 4) {
+            buf[i++] = '0' + (light_val % 10);
+            light_val /= 10;
+        }
+        while (i > 0 && pos < 47) {
+            light_text[pos++] = buf[--i];
+        }
+    }
+    light_text[pos] = '\0';
+    st7789_draw_text(x, y, light_text, white, inner_bg);
 }
 
 // Fonction pour envoyer une réponse via UART
@@ -907,6 +1240,15 @@ void processUartCommand() {
                 if (pos < uart_buffer_index) {
                     display_keys_count = uart_buffer[pos++];
                 }
+                // Last key pressed
+                if (pos < uart_buffer_index) {
+                    uint8_t last_key_len = uart_buffer[pos++];
+                    if (last_key_len < 16 && pos + last_key_len < uart_buffer_index) {
+                        memcpy((void*)display_last_key, (const void*)&uart_buffer[pos], last_key_len);
+                        display_last_key[last_key_len] = '\0';
+                        pos += last_key_len;
+                    }
+                }
                 // Backlight enabled
                 if (pos < uart_buffer_index) {
                     display_backlight_enabled = uart_buffer[pos++];
@@ -916,10 +1258,10 @@ void processUartCommand() {
                     display_backlight_brightness = uart_buffer[pos];
                 }
                 
-                // Mettre à jour l'affichage seulement si on a reçu une vraie configuration (pas juste les valeurs par défaut)
-                // Cela évite d'écraser le Welcome au démarrage
+                // Mettre à jour l'affichage simplifié seulement si on a reçu une vraie configuration
+                // Cela évite d'écraser l'affichage au démarrage
                 if (strcmp((char*)display_profile, "Profile 1") != 0 || display_keys_count > 0) {
-                    st7789_update_display();
+                    display_simple_info();
                 }
             }
             break;

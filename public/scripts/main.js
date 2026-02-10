@@ -977,6 +977,9 @@ function handleESP32Message(data) {
         case 'status':
             console.log('[DEBUG] [WEB_UI] Status ESP32:', data.message);
             break;
+        case 'ota_status':
+            handleOTAMessage(data);
+            break;
         case 'light':
             console.log(`[DEBUG] [WEB_UI] Light level update: ${data.level}`);
             // Mettre à jour l'affichage de la luminosité ambiante
@@ -1706,6 +1709,170 @@ function setupSettingsControls() {
                 resetSettings();
             }
         });
+    }
+    
+    // OTA Update
+    const otaUpdateBtn = document.getElementById('ota-update-btn');
+    const otaFileInput = document.getElementById('ota-file-input');
+    const otaProgress = document.getElementById('ota-progress');
+    const otaProgressBar = document.getElementById('ota-progress-bar');
+    const otaProgressText = document.getElementById('ota-progress-text');
+    
+    if (otaUpdateBtn && otaFileInput) {
+        otaUpdateBtn.addEventListener('click', async () => {
+            const file = otaFileInput.files[0];
+            if (!file) {
+                alert('Veuillez sélectionner un fichier .py');
+                return;
+            }
+            
+            if (!file.name.endsWith('.py')) {
+                alert('Le fichier doit être un fichier .py');
+                return;
+            }
+            
+            if (!confirm(`Mettre à jour le firmware avec ${file.name} ?\n\nL\'ESP32 va redémarrer après la mise à jour.`)) {
+                return;
+            }
+            
+            await performOTAUpdate(file);
+        });
+    }
+}
+
+// Fonction pour effectuer une mise à jour OTA
+async function performOTAUpdate(file) {
+    const otaProgress = document.getElementById('ota-progress');
+    const otaProgressBar = document.getElementById('ota-progress-bar');
+    const otaProgressText = document.getElementById('ota-progress-text');
+    const otaUpdateBtn = document.getElementById('ota-update-btn');
+    
+    try {
+        // Lire le fichier
+        const fileContent = await file.text();
+        const fileSize = fileContent.length;
+        
+        // Calculer le nombre de chunks (max 512 bytes par chunk pour BLE GATT)
+        // Base64 augmente la taille de ~33%, et le JSON wrapper prend ~50-80 bytes
+        // Donc: (512 - 80) / 1.33 ≈ 325 bytes max pour les données originales
+        // On utilise 200 caractères pour être sûr de rester sous 512 bytes
+        const chunkSize = 200; // Taille de chunk en caractères (après base64 + JSON < 512 bytes)
+        const totalChunks = Math.ceil(fileContent.length / chunkSize);
+        
+        // Afficher la progression
+        otaProgress.style.display = 'block';
+        otaProgressBar.style.width = '0%';
+        otaProgressText.textContent = '0%';
+        otaUpdateBtn.disabled = true;
+        
+        // Envoyer le message de début
+        const startMessage = {
+            type: 'ota_start',
+            filename: file.name,
+            size: fileSize,
+            chunks: totalChunks
+        };
+        await sendDataToESP32(JSON.stringify(startMessage));
+        
+        // Attendre un peu pour que l'ESP32 soit prêt
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Envoyer les chunks
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * chunkSize;
+            const end = Math.min(start + chunkSize, fileContent.length);
+            const chunk = fileContent.substring(start, end);
+            
+            // Encoder en base64 pour éviter les problèmes de caractères spéciaux
+            const chunkBase64 = btoa(unescape(encodeURIComponent(chunk)));
+            
+            const chunkMessage = {
+                type: 'ota_chunk',
+                index: i,
+                data: chunkBase64,
+                encoded: true
+            };
+            
+            // Vérifier la taille du message avant envoi (limite BLE GATT = 512 bytes)
+            const messageStr = JSON.stringify(chunkMessage);
+            const messageSize = new TextEncoder().encode(messageStr).length;
+            
+            if (messageSize > 512) {
+                console.error(`[OTA] Chunk ${i} too large: ${messageSize} bytes (max 512)`);
+                throw new Error(`Chunk ${i} is too large (${messageSize} bytes). Reduce chunk size.`);
+            }
+            
+            await sendDataToESP32(messageStr);
+            
+            // Mettre à jour la progression
+            const progress = Math.round(((i + 1) / totalChunks) * 100);
+            otaProgressBar.style.width = progress + '%';
+            otaProgressText.textContent = `${progress}% (${i + 1}/${totalChunks})`;
+            
+            // Petit délai entre les chunks pour éviter de surcharger BLE
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Envoyer le message de fin
+        const endMessage = {
+            type: 'ota_end'
+        };
+        await sendDataToESP32(JSON.stringify(endMessage));
+        
+        // Attendre la confirmation
+        otaProgressText.textContent = 'Mise à jour terminée, redémarrage...';
+        otaProgressBar.style.width = '100%';
+        
+        // Réinitialiser après 3 secondes
+        setTimeout(() => {
+            otaProgress.style.display = 'none';
+            otaUpdateBtn.disabled = false;
+            const otaFileInput = document.getElementById('ota-file-input');
+            if (otaFileInput) {
+                otaFileInput.value = '';
+            }
+        }, 3000);
+        
+    } catch (error) {
+        console.error('OTA Update Error:', error);
+        alert('Erreur lors de la mise à jour: ' + error.message);
+        otaProgress.style.display = 'none';
+        if (otaUpdateBtn) {
+            otaUpdateBtn.disabled = false;
+        }
+    }
+}
+
+// Gérer les messages OTA de l'ESP32
+function handleOTAMessage(data) {
+    const otaProgress = document.getElementById('ota-progress');
+    const otaProgressBar = document.getElementById('ota-progress-bar');
+    const otaProgressText = document.getElementById('ota-progress-text');
+    
+    switch (data.status) {
+        case 'started':
+            console.log('[OTA] Update started');
+            if (otaProgress) otaProgress.style.display = 'block';
+            break;
+        case 'progress':
+            if (otaProgressBar) {
+                otaProgressBar.style.width = data.progress + '%';
+            }
+            if (otaProgressText) {
+                otaProgressText.textContent = `${data.progress}% (${data.chunk}/${data.total})`;
+            }
+            break;
+        case 'completed':
+            console.log('[OTA] Update completed');
+            if (otaProgressText) {
+                otaProgressText.textContent = 'Mise à jour terminée, redémarrage...';
+            }
+            if (otaProgressBar) {
+                otaProgressBar.style.width = '100%';
+            }
+            break;
+        default:
+            console.log('[OTA] Unknown status:', data.status);
     }
 }
 
