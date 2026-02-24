@@ -234,6 +234,42 @@ header h1:hover .header-icon {
     box-shadow: 0 2px 8px rgba(74, 158, 255, 0.15);
 }
 
+.status-bar-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.platform-info-panel {
+    margin-top: 8px;
+    padding: 12px 16px;
+    background: var(--surface-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    font-size: 0.8rem;
+}
+
+.platform-info-panel .platform-info {
+    color: var(--text-secondary);
+}
+
+.platform-info-panel .platform-hint {
+    margin: 8px 0 4px;
+    padding: 6px 10px;
+    background: rgba(74, 158, 255, 0.15);
+    border-radius: 6px;
+    font-weight: 500;
+}
+
+.platform-info-panel .platform-tips {
+    margin: 8px 0 0;
+    padding-left: 20px;
+}
+
+.platform-info-panel .platform-tips li {
+    margin: 4px 0;
+}
+
 /* Groupes : espacement égal à l'intérieur, space-between entre les deux */
 .status-bar-left,
 .status-bar-right {
@@ -737,6 +773,13 @@ header h1:hover .header-icon {
     transform: translateY(0) scale(0.97);
     box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
     transition: all 0.1s ease;
+}
+
+/* Feedback visuel quand une touche est pressée physiquement (keypress ESP32) */
+.key-button.key-pressed {
+    transform: scale(0.96) !important;
+    transform-origin: center;
+    box-shadow: 0 0 0 2px var(--primary-color), 0 0 20px rgba(74, 158, 255, 0.7) !important;
 }
 
 .key-button.configured {

@@ -721,6 +721,8 @@ int main(void) {
     
     pwm_init();
     debug_print("PWM initialized\r\n");
+    // Forcer le rétro-éclairage à fond pour les tests (LED backlight toujours ON)
+    set_led_brightness(255);
     
     spi_init();
     debug_print("SPI initialized\r\n");
@@ -739,8 +741,8 @@ int main(void) {
     // Par défaut, l'ESP32 utilise le HID BLE (pas USB), donc on affiche BLUETOOTH
     strcpy((char*)display_output_mode, "bluetooth");
     display_keys_count = 0;
-    display_backlight_enabled = 0;
-    display_backlight_brightness = 0;
+    display_backlight_enabled = 1;
+    display_backlight_brightness = 255;
     display_brightness = 128;
     
     // Ne pas appeler st7789_update_display() ici - l'affichage Welcome est déjà fait dans st7789_init()
@@ -763,46 +765,8 @@ int main(void) {
         adc_counter++;
         if (adc_counter >= 5) {  // ~100ms (5 * 20ms) pour l'ADC
             adc_counter = 0;
-            uint16_t new_light = adc_read();
-            if (new_light != light_level) {
-                light_level = new_light;
-                
-                // Contrôle automatique du rétro-éclairage et de la LED selon la luminosité
-                // Si luminosité < 200 : activer backlight et LED
-                // Si luminosité >= 200 : désactiver backlight et LED
-                static uint8_t last_backlight_state = 0xFF;  // Pour détecter les changements
-                uint8_t backlight_changed = 0;
-                
-                if (light_level < 200) {
-                    // Activer le rétro-éclairage
-                    if (!display_backlight_enabled) {
-                        display_backlight_enabled = 1;
-                        display_backlight_brightness = 255;  // Luminosité maximale
-                        backlight_changed = 1;
-                    }
-                    // Activer la LED avec une luminosité adaptée (plus la lumière est faible, plus la LED est forte)
-                    // Inverser : light_level faible (0-199) → LED forte (255-128)
-                    uint8_t led_level = 255 - ((light_level * 127) / 199);
-                    if (led_level < 128) led_level = 128;  // Minimum 50% pour être visible
-                    set_led_brightness(led_level);
-                } else {
-                    // Désactiver le rétro-éclairage
-                    if (display_backlight_enabled) {
-                        display_backlight_enabled = 0;
-                        display_backlight_brightness = 0;
-                        backlight_changed = 1;
-                    }
-                    // Désactiver la LED
-                    set_led_brightness(0);
-                }
-                
-                // Mettre à jour l'affichage si le backlight a changé
-                if (backlight_changed && last_backlight_state != display_backlight_enabled) {
-                    last_backlight_state = display_backlight_enabled;
-                    // Forcer la mise à jour de l'affichage immédiatement
-                    display_simple_info();
-                }
-            }
+            // Pour l'instant, on lit seulement la luminosité sans toucher au backlight
+            light_level = adc_read();
         }
         
         // Rafraîchissement d'affichage de la lumière - toutes les ~200ms

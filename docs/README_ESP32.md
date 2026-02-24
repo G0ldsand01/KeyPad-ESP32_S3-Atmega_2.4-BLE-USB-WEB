@@ -68,9 +68,15 @@ upip.install('adafruit-circuitpython-bundle')
 - **RX** : GPIO 11 (ESP32 RX → ATmega TX)
 - **Baudrate** : 115200
 
-### LED PWM (Rétro-éclairage)
+### LED PWM (Rétro-éclairage legacy)
 
 - **LED** : GPIO 2 (PWM)
+
+### SK6812-E Per-Key Backlight
+
+- **Data** : GPIO 48 (chaîne addressable, 17 LEDs)
+- **Bibliothèque** : Adafruit NeoPixel (compatible SK6812)
+- Modifier `LED_STRIP_PIN` dans le code si votre PCB utilise un autre GPIO
 
 ## 📝 Structure du code
 
@@ -186,6 +192,21 @@ Si le macropad est alimenté par batterie :
 - Vérifiez que l'ESP32 est en mode advertising
 - Redémarrez l'ESP32
 - Vérifiez les logs dans le terminal série
+
+### Clavier BLE : touches ne fonctionnent pas sur Windows
+
+1. **Dépairer puis réappairer** : Ouvrez l’interface web (Chrome/Edge), connectez-vous au Macropad via Bluetooth, puis laissez la config se transmettre (plateforme + layout clavier). Cela enregistre le layout dans l’ESP32.
+1. **Dépairer puis réappairer** : Dans Paramètres Windows > Bluetooth, supprimez « Macropad Keyboard », puis réappairez.
+2. **Focus** : Cliquez dans un champ de texte (Bloc-notes, etc.) avant de taper.
+3. **Mises à jour Windows** : Certaines mises à jour peuvent perturber les pilotes HID BLE ; essayez de désinstaller puis réinstaller le périphérique dans le Gestionnaire de périphériques.
+
+### Touche Shift bloquée après déconnexion BLE
+
+Si une touche reste "enfoncée" après une déconnexion BLE : reconnectez le Macropad et appuyez sur n'importe quelle touche. Le firmware envoie un signal de relâchement avant chaque touche.
+
+### Layout clavier (USB et BLE)
+
+Le Macropad utilise les **codes HID Keypad** (numpad). Les touches 0-9, +, -, *, /, . produisent les mêmes caractères sur toutes les plateformes (Windows, macOS, Linux, Android, iOS) et tous les layouts (US, AZERTY, etc.) — comme un vrai clavier numérique du commerce.
 
 ### Les touches ne fonctionnent pas
 

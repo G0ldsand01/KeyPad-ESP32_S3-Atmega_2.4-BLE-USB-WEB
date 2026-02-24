@@ -63,6 +63,13 @@ let ws = null;
 let reconnectAttempts = 0;
 const maxReconnectAttempts = 5;
 let statusUpdateInterval = null;
+let bleWritePromise = Promise.resolve(); // File d'attente pour éviter "GATT operation already in progress"
+let backlightDebounceTimer = null;
+let statusUpdatesPausedUntil = 0;
+
+function pauseStatusUpdatesUntil(timestamp) {
+    statusUpdatesPausedUntil = Math.max(statusUpdatesPausedUntil, timestamp);
+}
 
 // Lucide Icons chargé depuis CDN dans Layout.astro
 
@@ -77,8 +84,7 @@ function ensureProfiles() {
         delete config.profiles['Profil 2'];
         if (config.activeProfile === 'Profil 2') config.activeProfile = 'Configuration';
     }
-    const navDefaults = { '1-1': { type: 'key', value: 'UP' }, '2-0': { type: 'key', value: 'Prev' }, '2-1': { type: 'key', value: 'Select' }, '2-2': { type: 'key', value: 'Next' }, '3-1': { type: 'key', value: 'DOWN' } };
-    for (const [id, def] of Object.entries(navDefaults)) { if (cfgKeys[id] == null) cfgKeys[id] = def; }
+    // Plus de navDefaults (flèches) — pavé numérique pur par défaut
     delete cfgKeys['0-0']; // Toujours supprimer 0-0 car c'est le profile switch
     if (!config.activeProfile || !config.profiles[config.activeProfile]) {
         config.activeProfile = Object.keys(config.profiles)[0] || 'Profil 1';
@@ -210,8 +216,8 @@ function initializeGrid() {
     grid.innerHTML = '';
     
     // 5 lignes. 0,0 = changeur de profil (forcé). 0,1–0,3 = configurables normalement dans chaque profil.
-    // skip: 2-3 (partie +), 4-1 (partie 4,0), 4-3 (partie =)
-    const skipPositions = new Set(['2-3', '4-1', '4-3']);
+    // skip: 2-3 (partie +), 4-2 (n'existe pas, 4-0 prend 2 cols), 4-3 (partie =)
+    const skipPositions = new Set(['2-3', '4-2', '4-3']);
     
     // S'assurer que config.rows et config.cols sont définis
     if (!config.rows || !config.cols) {
@@ -226,7 +232,10 @@ function initializeGrid() {
     
     for (let row = 0; row < config.rows; row++) {
         for (let col = 0; col < config.cols; col++) {
-            const keyId = `${row}-${col}`;
+            let keyId = `${row}-${col}`;
+            let matrixCol = col;
+            if (row === 4 && col === 1) continue; // Partie droite de 4-0 (wide), pas de touche séparée
+            if (row === 4 && col === 2) { keyId = '4-1'; matrixCol = 1; } // Position affichée 4,2 = 4,1 réel (4-0 prend 2 cols)
             if (skipPositions.has(keyId)) continue;
             
             if (keyId === '0-0') {
@@ -257,14 +266,14 @@ function initializeGrid() {
             const keyButton = document.createElement('div');
             keyButton.className = 'key-button';
             keyButton.id = `key-${keyId}`;
-            keyButton.dataset.row = row;
-            keyButton.dataset.col = col;
+            keyButton.dataset.row = String(row);
+            keyButton.dataset.col = String(matrixCol);
             
             let gridCol = col + 1, gridRow = row + 1, colSpan = 1, rowSpan = 1;
             
             if (keyId === '4-0') {
                 keyButton.classList.add('key-wide');
-                keyButton.dataset.spanKeys = '4-0,4-1';
+                keyButton.dataset.spanKeys = '4-0,4-2'; // 4-0 prend 2 cols, 4-1 est la touche "."
                 colSpan = 2;
             } else if (keyId === '1-3') {
                 keyButton.classList.add('key-tall');
@@ -297,7 +306,7 @@ function initializeGrid() {
             // Empêcher la propagation pour les touches row0 (sauf 0-0 qui est géré séparément)
             keyButton.addEventListener('click', (e) => {
                 e.stopPropagation(); // Empêcher la propagation vers d'autres handlers
-                selectKey(mainKeyId, row, col);
+                selectKey(mainKeyId, row, matrixCol);
             });
             
             grid.appendChild(keyButton);
@@ -351,7 +360,7 @@ function selectKey(keyId, row, col) {
     
     // Afficher le label approprié pour les grandes touches
     let displayLabel = keyId.replace('-', ',');
-    if (keyId === '4-0') displayLabel = '4,0 (4,0-4,1)';
+    if (keyId === '4-0') displayLabel = '4,0 (4,0-4,2)';
     else if (keyId === '1-3') displayLabel = '+ (1,3)';
     else if (keyId === '3-3') displayLabel = '= (3,3)';
     else if (config.activeProfile === 'Configuration' && NAV_DISPLAY_KEYS.includes(keyId)) {
@@ -628,6 +637,18 @@ function updateKeyDisplay(keyId) {
     }
 }
 
+// Détecter la plateforme (Windows, macOS, Linux, Android, iOS, Chromebook)
+function detectPlatform() {
+    const ua = navigator.userAgent.toLowerCase();
+    if (/windows|win32|win64/.test(ua)) return 'windows';
+    if (/macintosh|mac os x/.test(ua)) return 'macos';
+    if (/cros/.test(ua)) return 'cros';
+    if (/linux|ubuntu/.test(ua) && !/android/.test(ua)) return 'linux';
+    if (/android/.test(ua)) return 'android';
+    if (/iphone|ipad|ipod/.test(ua)) return 'ios';
+    return 'unknown';
+}
+
 // Se connecter à l'ESP32
 async function connectToESP32() {
     const status = document.getElementById('connection-status');
@@ -683,6 +704,18 @@ async function connectToESP32() {
                     config.bluetoothCharacteristic = characteristic;
                     config.connectionType = 'bluetooth';
                     connected = true;
+                    device.addEventListener('gattserverdisconnected', () => {
+                        config.connected = false;
+                        config.connectionType = null;
+                        config.bluetoothDevice = null;
+                        config.bluetoothServer = null;
+                        config.bluetoothCharacteristic = null;
+                        bleWritePromise = Promise.resolve();
+                        if (statusUpdateInterval) clearInterval(statusUpdateInterval);
+                        statusUpdateInterval = null;
+                        updateConnectionStatus(false);
+                        console.log('[BLE] Déconnecté par le périphérique');
+                    });
                 } else {
                     alert('Bluetooth n\'est pas supporté sur ce navigateur. Utilisez Chrome ou Edge.');
                     return;
@@ -690,7 +723,10 @@ async function connectToESP32() {
             } catch (error) {
                 console.error('Erreur connexion Bluetooth:', error);
                 if (error.name === 'NotFoundError') {
-                    alert('Aucun appareil Bluetooth trouvé. Assurez-vous que l\'ESP32 est allumé et en mode Bluetooth.');
+                    const msg = error.message?.includes('cancelled') || error.message?.includes('User cancelled')
+                        ? 'Connexion annulée.'
+                        : 'Aucun appareil Bluetooth trouvé. Assurez-vous que le Macropad est allumé et en mode Bluetooth.';
+                    alert(msg);
                 } else {
                     alert('Erreur lors de la connexion Bluetooth: ' + error.message);
                 }
@@ -728,7 +764,10 @@ async function connectToESP32() {
                 console.error('Détails de l\'erreur:', error.name, error.message);
                 
                 if (error.name === 'NotFoundError') {
-                    alert('Aucun port série détecté.\n\nVérifications:\n- L\'ESP32-S3 est-il connecté via USB?\n- Le port apparaît-il dans le Gestionnaire de périphériques?\n- Avez-vous sélectionné le bon port dans la liste?');
+                    const msg = error.message?.includes('No port selected') || error.message?.includes('cancelled')
+                        ? 'Connexion annulée.'
+                        : 'Aucun port série détecté.\n\nVérifications:\n- L\'ESP32-S3 est-il connecté via USB?\n- Le port apparaît-il dans le Gestionnaire de périphériques?\n- Avez-vous sélectionné le bon port dans la liste?';
+                    alert(msg);
                 } else if (error.name === 'SecurityError') {
                     alert('Erreur de sécurité: Vérifiez que vous utilisez HTTPS ou localhost, et que vous avez autorisé l\'accès au port série.');
                 } else if (error.name === 'InvalidStateError') {
@@ -748,6 +787,7 @@ async function connectToESP32() {
     
     if (connected) {
         config.connected = true;
+        pauseStatusUpdatesUntil(Date.now() + 10000); // Bloquer get_light pendant les envois initiaux
         updateConnectionStatus(true, connectionTypeValue);
         
         // Mettre à jour le bouton avec icône
@@ -772,6 +812,9 @@ async function connectToESP32() {
             // Pour USB/WiFi, on peut lire directement depuis le port série
             startSerialReader();
         }
+        
+        // Envoyer la config des touches + platform + layout en un seul message
+        await sendConfigToESP32();
     }
 }
 
@@ -841,6 +884,11 @@ async function disconnectFromESP32() {
     
     config.connected = false;
     config.connectionType = null;
+    bleWritePromise = Promise.resolve(); // Réinitialiser la file BLE
+    if (statusUpdateInterval) {
+        clearInterval(statusUpdateInterval);
+        statusUpdateInterval = null;
+    }
     updateConnectionStatus(false);
     
     // Mettre à jour le bouton avec icône
@@ -917,41 +965,31 @@ async function startSerialReader() {
     }
 }
 
-// Envoyer la configuration à l'ESP32
+// Envoyer la configuration à l'ESP32 (format compact pour BLE MTU ~512)
 async function sendConfigToESP32() {
     if (!config.connected) return;
     
-    const keys = getCurrentKeys();
-    delete keys['0-0'];
-    const data = JSON.stringify({
+    const rawKeys = getCurrentKeys();
+    delete rawKeys['0-0'];
+    const keys = {};
+    for (const [id, cfg] of Object.entries(rawKeys)) {
+        let v = cfg?.value;
+        if ((v === undefined || v === '') && Array.isArray(cfg?.macro)) v = cfg.macro.join(',');
+        keys[id] = v || '';
+    }
+    const payload = {
         type: 'config',
         rows: config.rows,
         cols: config.cols,
         keys: keys,
         activeProfile: config.activeProfile,
-        profiles: config.profiles,
-        profileList: Object.keys(config.profiles).join('|'),
-        outputMode: config.outputMode
-    });
+        outputMode: config.outputMode,
+        platform: detectPlatform()
+    };
+    const data = JSON.stringify(payload);
     
     try {
-        if (config.connectionType === 'usb' || config.connectionType === 'wifi') {
-            // Envoyer via port série
-            if (config.serialPort && config.serialPort.writable) {
-                const writer = config.serialPort.writable.getWriter();
-                await writer.write(new TextEncoder().encode(data + '\n'));
-                writer.releaseLock();
-            }
-        } else if (config.connectionType === 'bluetooth') {
-            // Envoyer via Bluetooth
-            if (config.bluetoothCharacteristic) {
-                const encoder = new TextEncoder();
-                const dataArray = encoder.encode(data + '\n');
-                await config.bluetoothCharacteristic.writeValue(dataArray);
-            } else {
-                console.log('Envoi Bluetooth:', data);
-            }
-        }
+        await sendDataToESP32(data);
     } catch (error) {
         console.error('Erreur de communication:', error);
     }
@@ -964,14 +1002,13 @@ function handleESP32Message(data) {
     switch (data.type) {
         case 'keypress':
             console.log(`[DEBUG] [WEB_UI] Key press: row=${data.row}, col=${data.col}`);
-            // Afficher visuellement quelle touche a été pressée
+            // 2-3 fait partie de 1-3 (+), 4-2 = touche "." affichée comme 4-1, 4-3 fait partie de 3-3 (=)
             const keyId = `${data.row}-${data.col}`;
-            const keyButton = document.getElementById(`key-${keyId}`);
+            const displayKeyId = ({ '2-3': '1-3', '4-2': '4-1', '4-3': '3-3' })[keyId] || keyId;
+            const keyButton = document.getElementById(`key-${displayKeyId}`);
             if (keyButton) {
-                keyButton.style.transform = 'scale(0.95)';
-                setTimeout(() => {
-                    keyButton.style.transform = '';
-                }, 100);
+                keyButton.classList.add('key-pressed');
+                setTimeout(() => keyButton.classList.remove('key-pressed'), 150);
             }
             break;
         case 'status':
@@ -1028,6 +1065,13 @@ function loadConfig() {
     try {
         savedConfig = JSON.parse(saved);
         config = { ...config, ...savedConfig };
+        // Ne jamais restaurer l'état de connexion (déconnecté au chargement)
+        config.connected = false;
+        config.connectionType = null;
+        config.serialPort = null;
+        config.bluetoothDevice = null;
+        config.bluetoothServer = null;
+        config.bluetoothCharacteristic = null;
         // Forcer la grille 4x5 (sans rangée 5)
         config.rows = 5;
         config.cols = 4;
@@ -1940,6 +1984,7 @@ async function sendSettingsToESP32() {
     
     const data = JSON.stringify({
         type: 'settings',
+        platform: detectPlatform(),
         debug: {
             esp32Enabled: config.settings?.debug?.esp32Enabled || false,
             esp32LogLevel: config.settings?.debug?.esp32LogLevel || 'info',
@@ -1999,20 +2044,32 @@ function setupDisplayControls() {
     if (adb) adb.addEventListener('click', async () => { await sendDisplayConfig(); alert('Configuration de l\'écran appliquée'); });
 }
 
-// Envoyer la configuration du rétro-éclairage
+// Envoyer la configuration du rétro-éclairage (debounce pour éviter BLE overload)
 async function sendBacklightConfig() {
     if (!config.connected) {
         console.warn('[DEBUG] Cannot send backlight config - not connected');
         return;
     }
     
-    const data = JSON.stringify({
-        type: 'backlight',
-        ...config.backlight
-    });
+    if (backlightDebounceTimer) clearTimeout(backlightDebounceTimer);
     
-    console.log('[DEBUG] Sending backlight config:', data);
-    await sendDataToESP32(data);
+    return new Promise((resolve) => {
+        backlightDebounceTimer = setTimeout(async () => {
+            backlightDebounceTimer = null;
+            const data = JSON.stringify({
+                type: 'backlight',
+                ...config.backlight
+            });
+            console.log('[DEBUG] Sending backlight config:', data);
+            try {
+                await sendDataToESP32(data);
+                pauseStatusUpdatesUntil(Date.now() + 8000); // Décalez get_light après config backlight
+            } catch (e) {
+                console.warn('sendBacklightConfig:', e);
+            }
+            resolve();
+        }, 400);
+    });
 }
 
 // Envoyer la configuration du capteur d'empreinte
@@ -2274,15 +2331,30 @@ async function sendDataToESP32(data) {
                 console.warn('[DEBUG] [WEB_UI] Serial port not writable');
             }
         } else if (config.connectionType === 'bluetooth') {
-            // Envoyer via Bluetooth
-            if (config.bluetoothCharacteristic) {
-                const encoder = new TextEncoder();
-                const dataArray = encoder.encode(data + '\n');
-                await config.bluetoothCharacteristic.writeValue(dataArray);
-                console.log('[DEBUG] [WEB_UI] Data sent via Bluetooth');
-            } else {
-                console.error('[DEBUG] [WEB_UI] Bluetooth characteristic not available');
+            if (!config.bluetoothCharacteristic || !config.bluetoothDevice?.gatt?.connected) {
+                return;
             }
+            const dataStr = data + '\n';
+            const char = config.bluetoothCharacteristic;
+            bleWritePromise = bleWritePromise.then(async () => {
+                if (!config.connected || !config.bluetoothDevice?.gatt?.connected || !char) return;
+                try {
+                    const encoded = new TextEncoder().encode(dataStr);
+                    const BLE_CHUNK = 20;
+                    if (encoded.length <= BLE_CHUNK) {
+                        await char.writeValue(encoded);
+                    } else {
+                        for (let i = 0; i < encoded.length; i += BLE_CHUNK) {
+                            await char.writeValue(encoded.slice(i, i + BLE_CHUNK));
+                            if (i + BLE_CHUNK < encoded.length) await new Promise(r => setTimeout(r, 15));
+                        }
+                    }
+                    console.log('[DEBUG] [WEB_UI] Data sent via Bluetooth');
+                } catch (e) {
+                    if (config.connected) console.error('[DEBUG] [WEB_UI] BLE write error:', e);
+                }
+            }).catch(() => { /* éviter rejet non géré */ });
+            await bleWritePromise;
         } else {
             console.warn('[DEBUG] [WEB_UI] Unknown connection type:', config.connectionType);
         }
@@ -2312,21 +2384,22 @@ function updateDisplayInfo() {
     if (sd) sd.textContent = config.activeProfile || 'Profil';
 }
 
-// Démarrer les mises à jour de statut
+// Démarrer les mises à jour de statut (appelé à l'init; l'interval ne fait rien si non connecté)
 function startStatusUpdates() {
     updateDisplayInfo();
     
+    if (statusUpdateInterval) clearInterval(statusUpdateInterval);
     statusUpdateInterval = setInterval(async () => {
         if (!config.connected) return;
+        const usbOk = config.connectionType === 'usb' && config.serialPort?.writable;
+        const bleOk = config.connectionType === 'bluetooth' && config.bluetoothDevice?.gatt?.connected;
+        if (!usbOk && !bleOk) return;
         
-        // Demander la luminosité ambiante si le mode environnement est activé
-        if (config.backlight.envBrightness) {
-            await sendDataToESP32(JSON.stringify({ type: 'get_light' }));
-        }
+        if (!config.backlight.envBrightness) return;
+        if (Date.now() < statusUpdatesPausedUntil) return;
         
-        // Les mises à jour de statut seront reçues via les messages
-        // depuis le port série ou Bluetooth dans handleESP32Message
-    }, 2000); // Mise à jour toutes les 2 secondes
+        await sendDataToESP32(JSON.stringify({ type: 'get_light' }));
+    }, 10000); // 10 s (BLE sensible aux requêtes trop fréquentes)
 }
 
 // --- Système de profils ---
