@@ -1,69 +1,77 @@
 /*
- * Encoder.cpp — Implémentation encodeur
+ * Encoder.cpp — Décodage Gray-code avec filtre anti-bruit
+ * 2 deltas consécutifs identiques requis pour éviter les faux positifs
+ * Reset quand idle pour éviter accumulation de bruit
  */
 #include "Encoder.h"
+
+// Table Gray-code: (prev<<2 | curr) → delta (-1, 0, +1)
+static const int8_t ENC_TABLE[16] = {
+    0, -1,  1,  0,
+    1,  0,  0, -1,
+   -1,  0,  0,  1,
+    0,  1, -1,  0
+};
+
+#define ENC_IDLE_RESET_MS 150   // Si pas de delta valide depuis X ms → reset (évite drift)
 
 void Encoder::begin() {
     pinMode(ENC_CLK_PIN, INPUT_PULLUP);
     pinMode(ENC_DT_PIN, INPUT_PULLUP);
     pinMode(ENC_SW_PIN, INPUT_PULLUP);
-    _lastClk = digitalRead(ENC_CLK_PIN);
+    _lastState = (digitalRead(ENC_CLK_PIN) << 1) | digitalRead(ENC_DT_PIN);
+    _lastDeltaTime = millis();
 }
 
 void Encoder::update() {
     unsigned long now = millis();
 
-    if (now - _lastRead < ENC_DEBOUNCE_MS) return;
-    _lastRead = now;
+    // ─── Rotation (Gray-code) ─────────────────────────────────────────────
+    uint8_t curr = (digitalRead(ENC_CLK_PIN) << 1) | digitalRead(ENC_DT_PIN);
+    uint8_t idx = (_lastState << 2) | curr;
+    int8_t delta = ENC_TABLE[idx & 0x0F];
+    _lastState = curr;
 
-    int clk = digitalRead(ENC_CLK_PIN);
-    int dt = digitalRead(ENC_DT_PIN);
-
-    if (clk != _lastClk) {
-        _lastClk = clk;
-        if (clk == 1) {
-            // Inverser si le volume monte au lieu de descendre (broches CLK/DT ou sens)
-            _position += (dt == 0) ? -1 : 1;
-            _position = constrain(_position, -4, 4);
-        }
-    }
-
-    if (now - _lastVolumeSent < VOLUME_COOLDOWN_MS) {
-        // Bouton quand même
-    } else if (now >= _blockedUntil) {
-        if (now - _burstReset > ENC_BURST_WINDOW_MS) {
-            _volUpCount = 0;
-            _volDownCount = 0;
-            _burstReset = now;
-        }
-        if (_volUpCount >= ENC_BURST_LIMIT || _volDownCount >= ENC_BURST_LIMIT) {
-            _blockedUntil = now + ENC_BLOCK_MS;
-            _position = 0;
-            _volUpCount = 0;
-            _volDownCount = 0;
-        } else if (_position >= 2) {
-            if (_rotateCb) _rotateCb(1);
-            _position = 0;
-            _lastVolumeSent = now;
-            _volUpCount++;
-            _volDownCount = 0;
-        } else if (_position <= -2) {
-            if (_rotateCb) _rotateCb(-1);
-            _position = 0;
-            _lastVolumeSent = now;
-            _volDownCount++;
-            _volUpCount = 0;
+    if (delta != 0) {
+        _lastDeltaTime = now;
+        // Filtre: 2 deltas consécutifs identiques = rotation réelle (pas bruit)
+        if (delta == _pendingDelta) {
+            _position += delta;
+            _pendingDelta = 0;
+        } else {
+            _pendingDelta = delta;
         }
     } else {
-        _position = 0;
+        _pendingDelta = 0;  // Transition invalide → annuler le pending
     }
 
-    int sw = digitalRead(ENC_SW_PIN);
-    if (sw == 0 && !_btnPressed && (now - _lastBtnPress > 200)) {
-        _btnPressed = true;
-        _lastBtnPress = now;
-        if (_buttonCb) _buttonCb(true);
-    } else if (sw == 1) {
-        _btnPressed = false;
+    // Reset si idle longtemps (évite accumulation de bruit résiduel)
+    if ((now - _lastDeltaTime) > ENC_IDLE_RESET_MS) {
+        _position = 0;
+        _reportedPos = 0;
+        _pendingDelta = 0;
+    }
+
+#if ENABLE_ENCODER_VOLUME
+    // Envoyer 1 commande volume par cran
+    int32_t diff = _position - _reportedPos;
+    if (diff != 0 && (now - _lastVolumeSent) >= ENC_VOLUME_COOLDOWN_MS) {
+        int8_t dir = (diff > 0) ? 1 : -1;
+        _reportedPos += dir;
+        _lastVolumeSent = now;
+
+        if (_rotateCb) _rotateCb(dir, 1);
+    }
+#endif
+
+    // ─── Bouton (debounce) ───────────────────────────────────────────────
+    bool raw = (digitalRead(ENC_SW_PIN) == LOW);
+    if (raw != _btnPressed) {
+        _btnPressed = raw;
+        _btnLastChg = now;
+    }
+    if (_btnPressed != _btnStable && (now - _btnLastChg) >= 25) {
+        _btnStable = _btnPressed;
+        if (_buttonCb && _btnStable) _buttonCb(true);
     }
 }

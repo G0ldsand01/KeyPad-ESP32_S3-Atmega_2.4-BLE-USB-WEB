@@ -32,8 +32,9 @@ static const KeycodeEntry KEYCODES[] = {
 
 static const int NUM_KEYCODES = sizeof(KEYCODES) / sizeof(KEYCODES[0]);
 
-void HidOutput::begin(USBHIDKeyboard* keyboard) {
+void HidOutput::begin(USBHIDKeyboard* keyboard, USBHIDConsumerControl* consumer) {
     _keyboard = keyboard;
+    _consumer = consumer;
 }
 
 void HidOutput::setBleState(bool connected, BLECharacteristic* pInput) {
@@ -81,6 +82,22 @@ void HidOutput::_sendKeypadReport(uint8_t kc, uint8_t modifier) {
 
 void HidOutput::_sendConsumerReport(uint16_t code) {
     if (_bleConnected && _pInput != nullptr) {
+        // Android BLE: Consumer Control → volume max. Utiliser Keyboard (0x80/0x81/0x7F) à la place.
+        uint8_t kc = 0;
+        if (code == CONSUMER_VOL_UP) kc = HID_KB_VOL_UP;
+        else if (code == CONSUMER_VOL_DOWN) kc = HID_KB_VOL_DOWN;
+        else if (code == CONSUMER_MUTE) kc = HID_KB_MUTE;
+
+        if (kc != 0) {
+            // Volume/mute via rapport clavier — compatible Android (Pixel, etc.)
+            static unsigned long lastBleVolSent = 0;
+            unsigned long now = millis();
+            if ((now - lastBleVolSent) < BLE_VOLUME_STEP_DELAY_MS) return;
+            lastBleVolSent = now;
+            _sendKeypadReport(kc, 0);
+            return;
+        }
+        // Autres codes Consumer (Prev, Next, Play) — garder Consumer Control
         uint8_t report[3] = {0x02, (uint8_t)(code & 0xFF), (uint8_t)(code >> 8)};
         _pInput->setValue(report, 3);
         delay(5);
@@ -90,6 +107,11 @@ void HidOutput::_sendConsumerReport(uint16_t code) {
         _pInput->setValue(release, 3);
         delay(5);
         _pInput->notify();
+    } else if (_consumer != nullptr) {
+        // USB HID Consumer Control — compatible Windows, macOS, Linux, Android
+        _consumer->press(code);
+        delay(30);
+        _consumer->release();
     }
 }
 

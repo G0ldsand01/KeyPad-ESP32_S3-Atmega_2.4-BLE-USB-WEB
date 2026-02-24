@@ -32,11 +32,9 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define ENC_DT_PIN 46
 #define ENC_SW_PIN 9
 
-#define ENC_DEBOUNCE_MS 5
-#define VOLUME_COOLDOWN_MS 80
-#define ENC_BURST_LIMIT 6
-#define ENC_BURST_WINDOW_MS 400
-#define ENC_BLOCK_MS 2000
+#define ENC_VOLUME_COOLDOWN_MS 40   // 1 commande volume par cran, min 40ms entre chaque
+#define BLE_VOLUME_STEP_DELAY_MS 130  // Android: espacement min entre rapports Consumer (évite "max ou rien")
+#define ENABLE_ENCODER_VOLUME 1    // 1 = activé. Lecture avant scan matrice pour éviter interférences.
 
 // ─── UART ATmega ────────────────────────────────────────────────────────────
 #define ATMEGA_UART_TX 10
@@ -96,6 +94,10 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define CONSUMER_VOL_UP 0xE9
 #define CONSUMER_VOL_DOWN 0xEA
 #define CONSUMER_MUTE 0xE2
+// Keyboard page volume (0x7F, 0x80, 0x81) — Android BLE accepte mieux que Consumer Control
+#define HID_KB_VOL_UP   0x80
+#define HID_KB_VOL_DOWN 0x81
+#define HID_KB_MUTE     0x7F
 #define CONSUMER_NEXT 0xB5
 #define CONSUMER_PREV 0xB6
 #define CONSUMER_PLAY_PAUSE 0xCD

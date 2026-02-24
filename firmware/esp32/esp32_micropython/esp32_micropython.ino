@@ -16,6 +16,7 @@
 
 #include <USB.h>
 #include <USBHIDKeyboard.h>
+#include <USBHIDConsumerControl.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -33,6 +34,7 @@ HidOutput hidOutput;
 
 HardwareSerial SerialAtmega(1);
 USBHIDKeyboard Keyboard;
+USBHIDConsumerControl ConsumerControl;
 Preferences preferences;
 
 // Keymap par défaut (grille physique)
@@ -110,9 +112,13 @@ void onKeyPress(uint8_t row, uint8_t col, bool pressed, bool isRepeat) {
     send_display_update_to_atmega();
 }
 
-void onEncoderRotate(int8_t dir) {
-    if (dir > 0) hidOutput.sendVolumeUp();
-    else hidOutput.sendVolumeDown();
+void onEncoderRotate(int8_t dir, uint8_t steps) {
+    for (uint8_t i = 0; i < steps; i++) {
+        if (dir > 0) hidOutput.sendVolumeUp();
+        else hidOutput.sendVolumeDown();
+        // Android BLE: espacement requis entre rapports Consumer (sinon "volume max ou rien")
+        if (deviceConnected && i < steps - 1) delay(BLE_VOLUME_STEP_DELAY_MS);
+    }
 }
 
 void onEncoderButton(bool pressed) {
@@ -202,12 +208,13 @@ void setup() {
     Serial.println("\n\n=== ESP32-S3 Macropad Initialization ===");
     Serial.println("Migration complète depuis MicroPython");
     
-    // Initialiser USB HID
+    // Initialiser USB HID (clavier + Consumer Control pour volume/média)
     USB.begin();
     delay(1000);
     Keyboard.begin();
+    ConsumerControl.begin();
     delay(1000);
-    Serial.println("[USB] USB HID initialized");
+    Serial.println("[USB] USB HID initialized (Keyboard + Consumer Control)");
     
     // Initialiser BLE avec un nom qui indique clairement que c'est un clavier
     // iPhone/iOS reconnaît mieux les appareils avec "Keyboard" dans le nom
@@ -240,15 +247,15 @@ void setup() {
             BLEUUID((uint16_t)0x2A4B),
             BLECharacteristic::PROPERTY_READ
         );
-        // Report Map: Keyboard + Keypad (0x00-0x67 pour compatibilité toutes plateformes)
+        // Report Map: Keyboard + Keypad (0x00-0x81 inclut Volume Up/Down/Mute pour Android BLE)
         uint8_t reportMap[] = {
             0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,
             0x85, 0x01,
             0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7,
             0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08,
             0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01,
-            0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x67,
-            0x05, 0x07, 0x19, 0x00, 0x29, 0x67, 0x81, 0x00,
+            0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x81,
+            0x05, 0x07, 0x19, 0x00, 0x29, 0x81, 0x81, 0x00,
             0xC0,
             0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01,
             0x85, 0x02,
@@ -382,7 +389,7 @@ void setup() {
     encoder.setButtonCallback(onEncoderButton);
     Serial.println("[ENCODER] Rotary encoder initialized");
 
-    hidOutput.begin(&Keyboard);
+    hidOutput.begin(&Keyboard, &ConsumerControl);
     
     // Activer le debug ATmega après un délai
     delay(2000);
@@ -404,9 +411,11 @@ void setup() {
 // ==================== LOOP PRINCIPAL ====================
 
 void loop() {
+    // Lire l'encodeur AVANT le scan matrice (évite interférences GPIO sur CLK/DT)
+    delay(1);
+    encoder.update();
     keyMatrix.scan();
     read_serial();
-    encoder.update();
     
     // Lire UART ATmega
     read_atmega_uart();

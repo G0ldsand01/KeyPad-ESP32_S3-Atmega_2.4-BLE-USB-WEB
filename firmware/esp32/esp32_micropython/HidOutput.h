@@ -9,6 +9,7 @@
 #include "Config.h"
 #include <BLEDevice.h>
 #include <USBHIDKeyboard.h>
+#include <USBHIDConsumerControl.h>
 
 struct KeycodeEntry {
     const char* symbol;
@@ -17,7 +18,7 @@ struct KeycodeEntry {
 
 class HidOutput {
 public:
-    void begin(USBHIDKeyboard* keyboard);
+    void begin(USBHIDKeyboard* keyboard, USBHIDConsumerControl* consumer = nullptr);
     void setBleState(bool connected, BLECharacteristic* pInput);
 
     void sendKey(const String& symbol, uint8_t row, uint8_t col);
@@ -31,6 +32,7 @@ public:
 
 private:
     USBHIDKeyboard* _keyboard = nullptr;
+    USBHIDConsumerControl* _consumer = nullptr;
     bool _bleConnected = false;
     BLECharacteristic* _pInput = nullptr;
 
