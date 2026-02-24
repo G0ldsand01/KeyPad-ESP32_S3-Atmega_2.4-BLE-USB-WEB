@@ -79,6 +79,7 @@
 #define UART_BUFFER_SIZE 256
 volatile uint8_t uart_buffer[UART_BUFFER_SIZE];  // Buffer pour recevoir les commandes
 volatile uint8_t uart_buffer_index = 0;
+volatile uint8_t uart_cmd_pending = 0;  // 1 = commande reçue, à traiter dans la boucle principale
 volatile uint8_t uart_command = 0;
 volatile uint8_t led_brightness = 0;  // 0-255
 volatile uint16_t light_level = 0;    // Valeur ADC du TEMT6000 (0-1023)
@@ -101,6 +102,7 @@ volatile char display_output_mode[16] = "usb";
 volatile uint8_t display_keys_count = 0;
 volatile uint8_t display_backlight_enabled = 0;
 volatile char display_last_key[16] = "";  // Dernière touche appuyée
+volatile char display_connected_device[32] = "";  // Appareil connecté (USB, Bluetooth, etc.)
 volatile uint8_t display_backlight_brightness = 0;
 volatile char display_custom1[32] = "";
 volatile char display_custom2[32] = "";
@@ -176,6 +178,8 @@ void uart_send_response(uint8_t cmd, uint8_t* data, uint8_t len);
 void uart_send_light_ascii(void);
 void display_light_level_on_screen(uint16_t value);
 void display_simple_info(void);
+void display_init_panel(void);
+void display_update_partial(uint8_t force_key_device);
 
 // Initialiser ADC pour TEMT6000
 void adc_init(void) {
@@ -730,9 +734,6 @@ int main(void) {
     // Délai avant initialisation de l'écran pour s'assurer que l'alimentation est stable
     _delay_ms(100);
     st7789_init();
-    
-    // Premier dessin dans main(): rectangle noir de la taille de l'écran
-    st7789_fill_rect(0, 0, ST7789_WIDTH, ST7789_HEIGHT, 0x0000);
     debug_print("ST7789 initialized\r\n");
     
     // Initialiser les valeurs d'affichage par défaut
@@ -757,8 +758,10 @@ int main(void) {
     
     // Boucle principale - optimisée pour la réactivité
     while (1) {
-        // Traiter les commandes UART en priorité (non-bloquant)
-        processUartCommand();
+        // Traiter les commandes UART (déferrées depuis l'ISR pour éviter blocage SPI)
+        if (uart_cmd_pending) {
+            processUartCommand();
+        }
         
         // Lire la luminosité toutes les ~20ms (au lieu de 100ms)
         static uint8_t adc_counter = 0;
@@ -902,210 +905,203 @@ void display_light_level_on_screen(uint16_t value) {
     }
 }
 
-// Afficher les informations simplifiées (comme dans l'image)
-void display_simple_info(void) {
-    static uint8_t first_call = 1;  // Flag pour la première fois
-    uint16_t black = 0x0000;
-    uint16_t white = 0xFFFF;
-    // Couleurs RGB565 - avec INVOFF, les valeurs sont normales
-    // Noir = 0x0000, Blanc = 0xFFFF
-    // Gris très foncé pour le fond du rectangle intérieur (légèrement plus clair que le noir)
-    uint16_t inner_bg = 0x1082;  // Gris très foncé RGB565 (presque noir mais pas 100%)
-    // Gris clair pour la bordure et le séparateur
-    uint16_t border_gray = 0x8410;  // Gris clair RGB565
-    uint16_t separator_gray = 0x8410;  // Gris clair RGB565
+// Constantes pour les zones d'affichage (mise à jour partielle)
+#define ZONE_LINE_H 16
+#define ZONE_W 280
+#define ZONE_X 20
+#define PANEL_X 5
+#define PANEL_Y 30
+#define PANEL_W 310
+#define PANEL_H 175
+#define INNER_BG 0x1082
+#define BORDER_GRAY 0x8410
+#define WHITE_COL 0xFFFF
+#define BLACK_COL 0x0000
+#define CONTENT_HEIGHT (ZONE_LINE_H + 2 + 1 + 2 + (7 * ZONE_LINE_H))  // 133
+
+// Dessiner le panneau statique une seule fois (fond, bordures, séparateur)
+void display_init_panel(void) {
+    st7789_fill_screen(BLACK_COL);
+    st7789_fill_rect(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, INNER_BG);
+    st7789_fill_rect(PANEL_X, PANEL_Y, PANEL_W, 1, BORDER_GRAY);
+    st7789_fill_rect(PANEL_X, PANEL_Y + PANEL_H - 1, PANEL_W, 1, BORDER_GRAY);
+    st7789_fill_rect(PANEL_X, PANEL_Y, 1, PANEL_H, BORDER_GRAY);
+    st7789_fill_rect(PANEL_X + PANEL_W - 1, PANEL_Y, 1, PANEL_H, BORDER_GRAY);
+    uint16_t sep_y = PANEL_Y + ((PANEL_H - CONTENT_HEIGHT) / 2) + 1 + ZONE_LINE_H + 2;
+    st7789_fill_rect(ZONE_X, sep_y, ZONE_W, 1, BORDER_GRAY);
+}
+
+// Helper: mettre une chaîne en majuscules dans out (max len-1 chars + null)
+static void to_upper_str(const char* in, char* out, uint8_t len) {
+    uint8_t i = 0;
+    while (i < len - 1 && in && *in) {
+        char c = *in++;
+        if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+        out[i++] = c;
+    }
+    out[i] = '\0';
+}
+
+// Mise à jour partielle: ne redessine que les zones dont la valeur a changé
+// force_key_device=1: force toujours la mise à jour des zones dernière touche et appareil
+void display_update_partial(uint8_t force_key_device) {
+    static uint8_t panel_drawn = 0;
+    static char prev_profile[32] = "";
+    static char prev_output_mode[16] = "";
+    static char prev_connected_device[32] = "";
+    static char prev_last_key[16] = "";
+    static uint8_t prev_keys_count = 255;
+    static uint8_t prev_backlight_enabled = 255;
+    static uint16_t prev_light_level = 0xFFFF;
     
-    // Fond noir pour tout l'écran - seulement la première fois
-    if (first_call) {
-        st7789_fill_screen(black);
-        first_call = 0;
+    uint16_t start_y = PANEL_Y + ((PANEL_H - CONTENT_HEIGHT) / 2) + 1;
+    
+    if (!panel_drawn) {
+        display_init_panel();
+        panel_drawn = 1;
     }
     
-    // Rectangle intérieur avec offset de 5px sur les côtés et 30px en haut
-    uint16_t offset = 5;
-    uint16_t offset_top = 30;  // Offset de 30px depuis le haut
-    uint16_t panel_x = offset;
-    uint16_t panel_y = offset_top;  // 30px depuis le haut
-    uint16_t panel_w = ST7789_WIDTH - (offset * 2);   // 320 - 10 = 310px
-    uint16_t panel_h = ST7789_HEIGHT - offset_top - offset;  // Hauteur = écran - offset haut - offset bas
+    uint16_t y_profile = start_y;
+    uint16_t y_mode = start_y + ZONE_LINE_H + 2 + 1 + 2;
+    uint16_t y_device = y_mode + ZONE_LINE_H;
+    uint16_t y_last_key = y_device + ZONE_LINE_H;
+    uint16_t y_keys = y_last_key + ZONE_LINE_H;
+    uint16_t y_backlight = y_keys + ZONE_LINE_H;
+    uint16_t y_light = y_backlight + ZONE_LINE_H;
     
-    // Dessiner le fond du rectangle intérieur (gris très foncé) - toujours redessiner pour éviter les artefacts
-    st7789_fill_rect(panel_x, panel_y, panel_w, panel_h, inner_bg);
+    char buf[48];
+    uint8_t pos;
+    const char* p;
     
-    // Dessiner les bordures grises à 5px des bords (sur les bords du rectangle intérieur)
-    // Bordure supérieure
-    st7789_fill_rect(panel_x, panel_y, panel_w, 1, border_gray);
-    // Bordure inférieure
-    st7789_fill_rect(panel_x, panel_y + panel_h - 1, panel_w, 1, border_gray);
-    // Bordure gauche
-    st7789_fill_rect(panel_x, panel_y, 1, panel_h, border_gray);
-    // Bordure droite
-    st7789_fill_rect(panel_x + panel_w - 1, panel_y, 1, panel_h, border_gray);
-    
-    // Centrer le contenu verticalement et horizontalement dans le rectangle intérieur
-    // Calculer la hauteur totale du contenu : profil + séparateur + 6 lignes d'info
-    uint16_t line_height = 16;
-    uint16_t separator_height = 1;
-    uint16_t spacing = 2;
-    // Profil (16) + espace (2) + séparateur (1) + espace (2) + 6 lignes (96) = 117px
-    uint16_t content_height = line_height + spacing + separator_height + spacing + (6 * line_height);
-    uint16_t vertical_offset = 1;  // Offset pour descendre tout le contenu
-    uint16_t start_y = panel_y + ((panel_h - content_height) / 2) + vertical_offset;  // Centrer dans le rectangle intérieur + offset
-    
-    // Marge horizontale pour le texte (centré horizontalement dans le rectangle intérieur)
-    uint16_t text_margin = 15;
-    uint16_t x = panel_x + text_margin;
-    uint16_t y = start_y;
-    
-    // Profil actuel en haut - convertir en majuscules pour l'affichage
-    char profile_text[32];
-    uint8_t pos = 0;
+    // Zone 1: Profil
     const char* profile_ptr = (char*)display_profile;
-    // Si le profil est vide, utiliser "PROFIL 1" par défaut
-    if (!profile_ptr || profile_ptr[0] == '\0') {
-        profile_ptr = "PROFIL 1";
+    if (!profile_ptr || !profile_ptr[0]) profile_ptr = "Profile 1";
+    if (strcmp(profile_ptr, prev_profile) != 0) {
+        strncpy((char*)prev_profile, profile_ptr, 31);
+        prev_profile[31] = '\0';
+        to_upper_str(profile_ptr, buf, sizeof(buf));
+        st7789_fill_rect(ZONE_X, y_profile, ZONE_W, ZONE_LINE_H, INNER_BG);
+        st7789_draw_text(ZONE_X, y_profile, buf, WHITE_COL, INNER_BG);
     }
-    while (*profile_ptr && pos < 31) {
-        char c = *profile_ptr++;
-        // Convertir en majuscule
-        if (c >= 'a' && c <= 'z') {
-            c = c - 'a' + 'A';
-        }
-        profile_text[pos++] = c;
-    }
-    profile_text[pos] = '\0';
-    // Afficher le profil même s'il est vide (affichera "PROFIL 1")
-    st7789_draw_text(x, y, profile_text, white, inner_bg);
-    y += line_height + spacing;  // Espace avant le séparateur
     
-    // Séparateur centré (largeur de l'écran moins les marges)
-    uint16_t separator_width = panel_w - (text_margin * 2);
-    st7789_fill_rect(x, y, separator_width, separator_height, separator_gray);
-    y += separator_height + spacing;  // Espace après le séparateur
-    
-    // Mode de connexion - "MODE DE CONNECTION : BLUETOOTH" ou "USB" (tout en majuscules)
+    // Zone 2: Mode de connexion
     const char* conn_status = "IDLE";
-    if (strcmp((char*)display_output_mode, "usb") == 0) {
-        conn_status = "USB";
-    } else if (strcmp((char*)display_output_mode, "bluetooth") == 0) {
-        conn_status = "BLUETOOTH";
+    if (strcmp((char*)display_output_mode, "usb") == 0) conn_status = "USB";
+    else if (strcmp((char*)display_output_mode, "bluetooth") == 0) conn_status = "BLUETOOTH";
+    if (strcmp((char*)display_output_mode, prev_output_mode) != 0) {
+        strncpy((char*)prev_output_mode, (char*)display_output_mode, 15);
+        prev_output_mode[15] = '\0';
+        pos = 0;
+        p = "MODE DE CONNECTION : ";
+        while (*p && pos < 47) buf[pos++] = *p++;
+        p = conn_status;
+        while (*p && pos < 47) buf[pos++] = *p++;
+        buf[pos] = '\0';
+        st7789_fill_rect(ZONE_X, y_mode, ZONE_W, ZONE_LINE_H, INNER_BG);
+        st7789_draw_text(ZONE_X, y_mode, buf, WHITE_COL, INNER_BG);
     }
     
-    // Construire "MODE DE CONNECTION : BLUETOOTH" ou "USB" (tout en majuscules)
-    char mode_text[48];
-    const char* mode_label = "MODE DE CONNECTION : ";
-    pos = 0;  // Réutiliser la variable pos déjà déclarée
-    const char* label_ptr = mode_label;
-    while (*label_ptr && pos < 47) {
-        mode_text[pos++] = *label_ptr++;
+    // Zone 3: Appareil connecté (fallback: déduire de display_output_mode si vide)
+    const char* device_ptr = (char*)display_connected_device;
+    if (!device_ptr || !device_ptr[0]) {
+        device_ptr = (strcmp((char*)display_output_mode, "bluetooth") == 0) ? "Bluetooth" : "Wired";
     }
-    const char* mode_ptr = conn_status;
-    while (*mode_ptr && pos < 47) {
-        mode_text[pos++] = *mode_ptr++;
+    if (force_key_device || strcmp(device_ptr, prev_connected_device) != 0) {
+        strncpy((char*)prev_connected_device, device_ptr, 31);
+        prev_connected_device[31] = '\0';
+        pos = 0;
+        p = "APPAREIL : ";
+        while (*p && pos < 47) buf[pos++] = *p++;
+        p = device_ptr;
+        while (*p && pos < 47) {
+            char c = *p++;
+            if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+            buf[pos++] = c;
+        }
+        buf[pos] = '\0';
+        st7789_fill_rect(ZONE_X, y_device, ZONE_W, ZONE_LINE_H, INNER_BG);
+        st7789_draw_text(ZONE_X, y_device, buf, WHITE_COL, INNER_BG);
     }
-    mode_text[pos] = '\0';
-    st7789_draw_text(x, y, mode_text, white, inner_bg);
-    y += line_height;
     
-    // Dernière touche appuyée - "TOUCHE : {touche}" (tout en majuscules)
-    char last_key_text[48];
-    const char* last_key_label = "TOUCHE : ";
-    pos = 0;
-    label_ptr = last_key_label;
-    while (*label_ptr && pos < 47) {
-        last_key_text[pos++] = *label_ptr++;
-    }
+    // Zone 4: Dernière touche
     const char* last_key_ptr = (char*)display_last_key;
-    if (!last_key_ptr || last_key_ptr[0] == '\0') {
-        last_key_ptr = "AUCUNE";
-    }
-    while (*last_key_ptr && pos < 47) {
-        char c = *last_key_ptr++;
-        // Convertir en majuscule
-        if (c >= 'a' && c <= 'z') {
-            c = c - 'a' + 'A';
+    const char* last_key_display = (!last_key_ptr || !last_key_ptr[0]) ? "AUCUNE" : last_key_ptr;
+    if (force_key_device || strcmp(last_key_display, prev_last_key) != 0) {
+        strncpy((char*)prev_last_key, last_key_display, 15);
+        prev_last_key[15] = '\0';
+        pos = 0;
+        p = "TOUCHE : ";
+        while (*p && pos < 47) buf[pos++] = *p++;
+        p = last_key_display;
+        while (*p && pos < 47) {
+            char c = *p++;
+            if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+            buf[pos++] = c;
         }
-        last_key_text[pos++] = c;
+        buf[pos] = '\0';
+        st7789_fill_rect(ZONE_X, y_last_key, ZONE_W, ZONE_LINE_H, INNER_BG);
+        st7789_draw_text(ZONE_X, y_last_key, buf, WHITE_COL, INNER_BG);
     }
-    last_key_text[pos] = '\0';
-    st7789_draw_text(x, y, last_key_text, white, inner_bg);
-    y += line_height;
     
-    // Nombre de touches - "TOUCHE CONFIGURE : {touche}/20" (tout en majuscules, sans accent)
-    // Les touches viennent de l'ESP32 via display_keys_count
-    char keys_text[48];
-    const char* keys_label = "TOUCHE CONFIGURE : ";
-    pos = 0;
-    label_ptr = keys_label;
-    while (*label_ptr && pos < 47) {
-        keys_text[pos++] = *label_ptr++;
-    }
-    uint8_t keys_count = display_keys_count;  // Vient de l'ESP32 via UART
-    if (keys_count == 0) {
-        keys_text[pos++] = '0';
-    } else {
-        char buf[4];
-        uint8_t i = 0;
-        while (keys_count > 0 && i < 3) {
-            buf[i++] = '0' + (keys_count % 10);
-            keys_count /= 10;
+    // Zone 5: Touches configurées
+    uint8_t kc = display_keys_count;
+    if (kc != prev_keys_count) {
+        prev_keys_count = kc;
+        pos = 0;
+        p = "TOUCHE CONFIGURE : ";
+        while (*p && pos < 47) buf[pos++] = *p++;
+        if (kc == 0) buf[pos++] = '0';
+        else {
+            char nb[4];
+            uint8_t i = 0;
+            uint8_t n = kc;
+            while (n > 0 && i < 3) { nb[i++] = '0' + (n % 10); n /= 10; }
+            while (i > 0 && pos < 47) buf[pos++] = nb[--i];
         }
-        while (i > 0 && pos < 47) {
-            keys_text[pos++] = buf[--i];
-        }
+        buf[pos++] = '/'; buf[pos++] = '2'; buf[pos++] = '0';
+        buf[pos] = '\0';
+        st7789_fill_rect(ZONE_X, y_keys, ZONE_W, ZONE_LINE_H, INNER_BG);
+        st7789_draw_text(ZONE_X, y_keys, buf, WHITE_COL, INNER_BG);
     }
-    keys_text[pos++] = '/';
-    keys_text[pos++] = '2';
-    keys_text[pos++] = '0';
-    keys_text[pos] = '\0';
-    st7789_draw_text(x, y, keys_text, white, inner_bg);
-    y += line_height;
     
-    // Rétro-éclairage - "RETRO-ECLAIRAGE : ON/OFF" (tout en majuscules, sans accent)
-    char backlight_text[48];
-    const char* backlight_label = "RETRO-ECLAIRAGE : ";
-    pos = 0;
-    label_ptr = backlight_label;
-    while (*label_ptr && pos < 47) {
-        backlight_text[pos++] = *label_ptr++;
+    // Zone 6: Rétro-éclairage
+    uint8_t be = display_backlight_enabled ? 1 : 0;
+    if (be != prev_backlight_enabled) {
+        prev_backlight_enabled = be;
+        pos = 0;
+        p = "RETRO-ECLAIRAGE : ";
+        while (*p && pos < 47) buf[pos++] = *p++;
+        if (be) { buf[pos++] = 'O'; buf[pos++] = 'N'; }
+        else { buf[pos++] = 'O'; buf[pos++] = 'F'; buf[pos++] = 'F'; }
+        buf[pos] = '\0';
+        st7789_fill_rect(ZONE_X, y_backlight, ZONE_W, ZONE_LINE_H, INNER_BG);
+        st7789_draw_text(ZONE_X, y_backlight, buf, WHITE_COL, INNER_BG);
     }
-    if (display_backlight_enabled) {
-        backlight_text[pos++] = 'O';
-        backlight_text[pos++] = 'N';
-    } else {
-        backlight_text[pos++] = 'O';
-        backlight_text[pos++] = 'F';
-        backlight_text[pos++] = 'F';
-    }
-    backlight_text[pos] = '\0';
-    st7789_draw_text(x, y, backlight_text, white, inner_bg);
-    y += line_height;
     
-    // Niveau de luminosité - "LUMINOSITE : XXXX" (tout en majuscules)
-    char light_text[48];
-    const char* light_label = "LUMINOSITE : ";
-    pos = 0;
-    label_ptr = light_label;
-    while (*label_ptr && pos < 47) {
-        light_text[pos++] = *label_ptr++;
-    }
-    // Convertir light_level en chaîne (0-1023)
-    uint16_t light_val = light_level;
-    if (light_val == 0) {
-        light_text[pos++] = '0';
-    } else {
-        char buf[5];
-        uint8_t i = 0;
-        while (light_val > 0 && i < 4) {
-            buf[i++] = '0' + (light_val % 10);
-            light_val /= 10;
+    // Zone 7: Luminosité
+    uint16_t lv = light_level;
+    if (lv != prev_light_level) {
+        prev_light_level = lv;
+        pos = 0;
+        p = "LUMINOSITE : ";
+        while (*p && pos < 47) buf[pos++] = *p++;
+        if (lv == 0) buf[pos++] = '0';
+        else {
+            char nb[5];
+            uint8_t i = 0;
+            uint16_t n = lv;
+            while (n > 0 && i < 4) { nb[i++] = '0' + (n % 10); n /= 10; }
+            while (i > 0 && pos < 47) buf[pos++] = nb[--i];
         }
-        while (i > 0 && pos < 47) {
-            light_text[pos++] = buf[--i];
-        }
+        buf[pos] = '\0';
+        st7789_fill_rect(ZONE_X, y_light, ZONE_W, ZONE_LINE_H, INNER_BG);
+        st7789_draw_text(ZONE_X, y_light, buf, WHITE_COL, INNER_BG);
     }
-    light_text[pos] = '\0';
-    st7789_draw_text(x, y, light_text, white, inner_bg);
+}
+
+// Alias pour compatibilité - appelle la mise à jour partielle
+void display_simple_info(void) {
+    display_update_partial(0);
 }
 
 // Fonction pour envoyer une réponse via UART
@@ -1176,7 +1172,7 @@ void processUartCommand() {
                 // Mode
                 if (pos < uart_buffer_index) {
                     uint8_t mode_len = uart_buffer[pos++];
-                    if (mode_len < 16 && pos + mode_len < uart_buffer_index) {
+                    if (mode_len < 16 && pos + mode_len <= uart_buffer_index) {
                         memcpy((void*)display_mode, (const void*)&uart_buffer[pos], mode_len);
                         display_mode[mode_len] = '\0';
                         pos += mode_len;
@@ -1185,7 +1181,7 @@ void processUartCommand() {
                 // Profile
                 if (pos < uart_buffer_index) {
                     uint8_t profile_len = uart_buffer[pos++];
-                    if (profile_len < 32 && pos + profile_len < uart_buffer_index) {
+                    if (profile_len < 32 && pos + profile_len <= uart_buffer_index) {
                         memcpy((void*)display_profile, (const void*)&uart_buffer[pos], profile_len);
                         display_profile[profile_len] = '\0';
                         pos += profile_len;
@@ -1194,7 +1190,7 @@ void processUartCommand() {
                 // Output mode
                 if (pos < uart_buffer_index) {
                     uint8_t output_len = uart_buffer[pos++];
-                    if (output_len < 16 && pos + output_len < uart_buffer_index) {
+                    if (output_len < 16 && pos + output_len <= uart_buffer_index) {
                         memcpy((void*)display_output_mode, (const void*)&uart_buffer[pos], output_len);
                         display_output_mode[output_len] = '\0';
                         pos += output_len;
@@ -1207,10 +1203,14 @@ void processUartCommand() {
                 // Last key pressed
                 if (pos < uart_buffer_index) {
                     uint8_t last_key_len = uart_buffer[pos++];
-                    if (last_key_len < 16 && pos + last_key_len < uart_buffer_index) {
-                        memcpy((void*)display_last_key, (const void*)&uart_buffer[pos], last_key_len);
-                        display_last_key[last_key_len] = '\0';
-                        pos += last_key_len;
+                    if (last_key_len < 16) {
+                        if (last_key_len > 0 && pos + last_key_len <= uart_buffer_index) {
+                            memcpy((void*)display_last_key, (const void*)&uart_buffer[pos], last_key_len);
+                            display_last_key[last_key_len] = '\0';
+                            pos += last_key_len;
+                        } else if (last_key_len == 0) {
+                            display_last_key[0] = '\0';
+                        }
                     }
                 }
                 // Backlight enabled
@@ -1219,14 +1219,29 @@ void processUartCommand() {
                 }
                 // Backlight brightness
                 if (pos < uart_buffer_index) {
-                    display_backlight_brightness = uart_buffer[pos];
+                    display_backlight_brightness = uart_buffer[pos++];
+                }
+                // Time (optionnel - skip)
+                if (pos < uart_buffer_index) {
+                    uint8_t time_len = uart_buffer[pos++];
+                    if (time_len > 0 && pos + time_len <= uart_buffer_index) {
+                        pos += time_len;
+                    }
+                }
+                // Appareil connecté (optionnel)
+                if (pos < uart_buffer_index) {
+                    uint8_t device_len = uart_buffer[pos++];
+                    if (device_len > 0 && device_len < 32 && pos + device_len <= uart_buffer_index) {
+                        memcpy((void*)display_connected_device, (const void*)&uart_buffer[pos], device_len);
+                        display_connected_device[device_len] = '\0';
+                        pos += device_len;
+                    } else if (device_len == 0) {
+                        display_connected_device[0] = '\0';
+                    }
                 }
                 
-                // Mettre à jour l'affichage simplifié seulement si on a reçu une vraie configuration
-                // Cela évite d'écraser l'affichage au démarrage
-                if (strcmp((char*)display_profile, "Profile 1") != 0 || display_keys_count > 0) {
-                    display_simple_info();
-                }
+                // Mise à jour partielle (force last_key et device à chaque réception UART)
+                display_update_partial(1);
             }
             break;
             
@@ -1308,27 +1323,26 @@ void processUartCommand() {
             break;
     }
     
-    // Réinitialiser le buffer
+    // Réinitialiser le buffer et le flag de commande en attente
     uart_buffer_index = 0;
     uart_command = 0;
+    uart_cmd_pending = 0;
 }
 
-// Interruption UART (réception)
+// Interruption UART (réception) - bufferise; la boucle principale traite quand uart_cmd_pending
 ISR(USART_RX_vect) {
     uint8_t received = UDR0;
     
-    // Si on reçoit un caractère de fin de ligne, traiter la commande
     if (received == '\n' || received == '\r') {
         if (uart_buffer_index > 0) {
-            processUartCommand();
+            uart_cmd_pending = 1;  // Conserver le buffer pour processUartCommand
         }
-        uart_buffer_index = 0;
+        // Ne PAS reset uart_buffer_index - la boucle principale le fera après traitement
     } else {
-        // Ajouter le byte au buffer
+        if (uart_cmd_pending) return;  // Attendre que la boucle principale traite
         if (uart_buffer_index < UART_BUFFER_SIZE - 1) {
             uart_buffer[uart_buffer_index++] = received;
         } else {
-            // Buffer plein, réinitialiser
             uart_buffer_index = 0;
         }
     }

@@ -36,10 +36,17 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define BLE_VOLUME_STEP_DELAY_MS 130  // Android: espacement min entre rapports Consumer (évite "max ou rien")
 #define ENABLE_ENCODER_VOLUME 1    // 1 = activé. Lecture avant scan matrice pour éviter interférences.
 
+// ─── USB Passthrough (obsolète avec hub USB) ───────────────────────────────────
+#define ENABLE_USB_PASSTHROUGH 0   // Hub USB = clavier + fingerprint simultanés
+
+// ─── BLE Switch appareil (PROFILE+1 maintenu 2s) ──────────────────────────────
+#define ENABLE_BLE_DEVICE_SWITCH 1
+#define BLE_SWITCH_COMBO_MS 2000
+
 // ─── UART ATmega ────────────────────────────────────────────────────────────
 #define ATMEGA_UART_TX 10
 #define ATMEGA_UART_RX 11
-#define ATMEGA_UART_BAUD 9600
+#define ATMEGA_UART_BAUD 115200
 
 #define CMD_READ_LIGHT 0x01
 #define CMD_SET_LED 0x02
@@ -109,6 +116,6 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define BLE_CHAR_SERIAL "0000ffe1-0000-1000-8000-00805f9b34fb"
 
 // ─── Display update ─────────────────────────────────────────────────────────
-#define DISPLAY_UPDATE_INTERVAL_MS 5000
+#define DISPLAY_UPDATE_INTERVAL_MS 1000
 
 #endif // CONFIG_H

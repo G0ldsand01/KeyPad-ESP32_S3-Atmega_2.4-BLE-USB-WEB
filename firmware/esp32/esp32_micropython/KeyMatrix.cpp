@@ -3,6 +3,11 @@
  */
 #include "KeyMatrix.h"
 
+bool KeyMatrix::isKeyPressed(uint8_t row, uint8_t col) const {
+    if (row >= NUM_ROWS || col >= NUM_COLS) return false;
+    return _lastState[row][col] != 0;
+}
+
 void KeyMatrix::begin() {
     for (int i = 0; i < NUM_COLS; i++) {
         pinMode(COL_PINS[i], OUTPUT);

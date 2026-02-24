@@ -15,6 +15,9 @@ public:
     void begin();
     void scan();
 
+    // État actuel d'une touche (pour détection combo PROFILE+0)
+    bool isKeyPressed(uint8_t row, uint8_t col) const;
+
     void setCallback(KeyCallback cb) { _callback = cb; }
     void setDebounceMs(uint16_t ms) { _debounceMs = ms; }
 

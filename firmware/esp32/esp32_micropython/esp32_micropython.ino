@@ -81,6 +81,10 @@ String ota_file_content = "";
 String last_key_pressed = "";
 unsigned long last_display_update = 0;
 
+// BLE Switch: PROFILE+1 maintenu 2s → déconnecte et permet de connecter un autre appareil
+unsigned long bleSwitchComboStart = 0;
+unsigned long bleSwitchLastTrigger = 0;
+
 #define SERVICE_UUID_SERIAL "0000ffe0-0000-1000-8000-00805f9b34fb"
 #define CHAR_UUID_SERIAL "0000ffe1-0000-1000-8000-00805f9b34fb"
 
@@ -98,6 +102,11 @@ void onKeyPress(uint8_t row, uint8_t col, bool pressed, bool isRepeat) {
     if (symbol.length() == 0) return;
     if (isRepeat && !HidOutput::keyShouldRepeat(symbol)) return;
 
+#if ENABLE_BLE_DEVICE_SWITCH
+    // Ne pas envoyer si combo PROFILE+1 en cours (switch BLE)
+    if (keyMatrix.isKeyPressed(0, 0) && keyMatrix.isKeyPressed(3, 0)) return;
+#endif
+
     Serial.printf("[HID] Key [%d,%d] PRESSED: %s\n", row, col, symbol.c_str());
     last_key_pressed = symbol;
 
@@ -110,6 +119,8 @@ void onKeyPress(uint8_t row, uint8_t col, bool pressed, bool isRepeat) {
     String keypress_msg = "{\"type\":\"keypress\",\"row\":" + String(row) + ",\"col\":" + String(col) + "}";
     send_to_web(keypress_msg);
     send_display_update_to_atmega();
+    delay(20);  // Laisser le temps à l'UART d'envoyer
+    send_display_update_to_atmega();  // Envoi redondant pour garantir la réception ATmega
 }
 
 void onEncoderRotate(int8_t dir, uint8_t steps) {
@@ -355,6 +366,7 @@ void setup() {
     
     preferences.begin("macropad", false);
     platformDetected = preferences.getString("platform", "unknown");
+    // ble_device_name: nom personnalisé de l'appareil connecté (ex: "Pixel", "PC Mathieu")
     Serial.printf("[SYSTEM] Platform: %s (Keypad HID - layout indépendant)\n", platformDetected.c_str());
     
     // Keymap par défaut au démarrage
@@ -411,10 +423,34 @@ void setup() {
 // ==================== LOOP PRINCIPAL ====================
 
 void loop() {
+    unsigned long now = millis();
+    
     // Lire l'encodeur AVANT le scan matrice (évite interférences GPIO sur CLK/DT)
     delay(1);
     encoder.update();
     keyMatrix.scan();
+
+#if ENABLE_BLE_DEVICE_SWITCH
+    // PROFILE(0,0) + 1(3,0) maintenu 2s → déconnecte BLE pour connecter un autre appareil
+    bool profileHeld = keyMatrix.isKeyPressed(0, 0);
+    bool oneHeld = keyMatrix.isKeyPressed(3, 0);
+    if (profileHeld && oneHeld && (now - bleSwitchLastTrigger) > 2000) {
+        if (bleSwitchComboStart == 0) bleSwitchComboStart = now;
+        else if ((now - bleSwitchComboStart) >= BLE_SWITCH_COMBO_MS) {
+            bleSwitchComboStart = 0;
+            bleSwitchLastTrigger = now;
+            if (BLE_AVAILABLE && pServer && pServer->getConnectedCount() > 0) {
+                uint16_t connId = pServer->getConnId();
+                pServer->disconnect(connId);
+                Serial.println("[BLE] Switch appareil — déconnecté, prêt pour un autre appareil");
+                send_atmega_command(CMD_UPDATE_DISPLAY, nullptr, 0);
+            }
+        }
+    } else {
+        bleSwitchComboStart = 0;
+    }
+#endif
+
     read_serial();
     
     // Lire UART ATmega
@@ -433,7 +469,6 @@ void loop() {
     }
     
     // Mettre à jour l'affichage ATmega périodiquement
-    unsigned long now = millis();
     if (now - last_display_update >= DISPLAY_UPDATE_INTERVAL_MS) {
         send_display_update_to_atmega();
         last_display_update = now;
@@ -493,6 +528,19 @@ void processWebMessage(String message) {
         if (settingsObj.containsKey("platform")) {
             platformDetected = settingsObj["platform"].as<String>();
             preferences.putString("platform", platformDetected);
+        }
+        if (settingsObj.containsKey("bleDeviceName")) {
+            String name = settingsObj["bleDeviceName"].as<String>();
+            preferences.putString("ble_device_name", name);
+            Serial.printf("[CONFIG] BLE device name set: %s\n", name.c_str());
+            send_display_update_to_atmega();
+        }
+    } else if (msg_type == "set_device_name") {
+        if (doc.containsKey("name")) {
+            String name = doc["name"].as<String>();
+            preferences.putString("ble_device_name", name);
+            Serial.printf("[CONFIG] BLE device name set: %s\n", name.c_str());
+            send_display_update_to_atmega();
         }
     } else if (msg_type == "ota_start") {
         JsonObject otaObj = doc.as<JsonObject>();
@@ -599,6 +647,7 @@ void send_config_to_web() {
     doc["activeProfile"] = "Profil 1";
     doc["outputMode"] = deviceConnected ? "bluetooth" : "usb";
     doc["platform"] = platformDetected;
+    doc["bleDeviceName"] = preferences.getString("ble_device_name", "");
     
     JsonObject keys = doc.createNestedObject("keys");
     for (int r = 0; r < NUM_ROWS; r++) {
@@ -927,8 +976,25 @@ void send_display_update_to_atmega() {
         pos += time_len;
     }
     
+    // Appareil connecté: Wired si USB, sinon nom personnalisé ou "Bluetooth"
+    String device_name;
+    if (output_mode == "usb") {
+        device_name = "Wired";
+    } else if (deviceConnected) {
+        String custom = preferences.getString("ble_device_name", "");
+        device_name = (custom.length() > 0) ? custom.substring(0, 28) : "Bluetooth";
+    } else {
+        device_name = "Bluetooth (En attente)";
+    }
+    int device_len = device_name.length();
+    payload[pos++] = device_len & 0xFF;
+    if (device_len > 0) {
+        memcpy(&payload[pos], device_name.c_str(), device_len);
+        pos += device_len;
+    }
+    
     send_atmega_command(CMD_SET_DISPLAY_DATA, payload, pos);
     
-    Serial.printf("[UART] Sending display update: profile=%s, mode=%s, keys=%d, last_key=%s, time=%s\n",
-                  profile.c_str(), mode.c_str(), keys_count, last_key.c_str(), current_time.c_str());
+    Serial.printf("[UART] Sending display update: profile=%s, mode=%s, keys=%d, last_key=%s, device=%s\n",
+                  profile.c_str(), mode.c_str(), keys_count, last_key.c_str(), device_name.c_str());
 }

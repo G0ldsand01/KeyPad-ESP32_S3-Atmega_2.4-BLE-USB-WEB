@@ -145,6 +145,7 @@ L'encodeur rotatif pour le volume utilise :
 4. ✅ Configuration des touches via Serial JSON
 5. ✅ Sauvegarde des profils en mémoire flash
 6. ✅ Support USB HID Keyboard
+7. ✅ **USB Passthrough** — PROFILE+0 maintenu 3s bascule entre clavier et fingerprint (port USB A)
 
 #### Non inclus (pour version complète) :
 - Écran OLED
@@ -367,6 +368,18 @@ Vous pouvez aussi forcer un mode dans le code en modifiant :
 ```cpp
 String outputMode = "usb";  // ou "bluetooth"
 ```
+
+#### USB Hub (clavier + fingerprint simultanés)
+
+Avec le hub USB2514, le clavier et le fingerprint fonctionnent en même temps — pas de bascule manuelle.
+
+#### BLE Switch appareil (PROFILE + 1)
+
+Pour basculer entre plusieurs appareils Bluetooth (PC, téléphone, tablette) :
+
+1. **Maintenez** PROFILE + 1 pendant **2 secondes**
+2. Le Macropad se déconnecte et redémarre l'advertising
+3. Connectez-vous depuis l'autre appareil (Paramètres Bluetooth)
 
 ### Codes de Touches Compatibles
 

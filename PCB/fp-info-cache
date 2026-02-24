@@ -1,4 +1,4 @@
-28214762277756917
+28216534244771341
 Audio_Module
 Reverb_BTDR-1H
 Digital Reverberation Unit, http://www.belton.co.kr/inc/downfile.php?seq=17&file=pdf (footprint from http://www.uk-electronic.de/PDF/BTDR-1.pdf)
@@ -111838,3 +111838,10 @@ XCVR_ESP32-S3-DEVKITC-1-N16R8V
 0
 44
 44
+footprints
+XTAL_HC49P488W43L1150T466H350
+
+
+0
+2
+2
