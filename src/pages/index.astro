@@ -5,7 +5,6 @@ import ConfigPanel from '../components/ConfigPanel.astro';
 import StatusBar from '../components/StatusBar.astro';
 import TabNavigation from '../components/TabNavigation.astro';
 import BacklightPanel from '../components/BacklightPanel.astro';
-import FingerprintPanel from '../components/FingerprintPanel.astro';
 import DisplayPanel from '../components/DisplayPanel.astro';
 import SettingsPanel from '../components/SettingsPanel.astro';
 ---
@@ -41,13 +40,8 @@ import SettingsPanel from '../components/SettingsPanel.astro';
 
       <!-- Onglet Matériel -->
       <div class="tab-panel" id="tab-hardware">
-        <div class="hardware-layout">
-          <div class="hardware-column">
-            <BacklightPanel />
-          </div>
-          <div class="hardware-column">
-            <FingerprintPanel />
-          </div>
+        <div class="hardware-layout hardware-layout-full">
+          <BacklightPanel />
         </div>
       </div>
 

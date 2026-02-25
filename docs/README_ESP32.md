@@ -222,9 +222,20 @@ Le Macropad utilise les **codes HID Keypad** (numpad). Les touches 0-9, +, -, *,
 - Vérifiez que l'ATmega est alimenté
 - Vérifiez les logs UART dans le terminal série
 
+### Moniteur série vide (seulement message de boot ESP-ROM)
+
+Si vous ne voyez que le message de boot et pas les logs du sketch :
+
+1. **Arduino IDE** : Outils > **USB CDC On Boot** > **Enabled**
+2. **Réenregistrer** le sketch après avoir changé cette option
+3. **Réinitialiser** la carte (bouton RST) après le téléversement
+4. **Délai** : le sketch attend 2 s au démarrage pour laisser le port USB s'initialiser
+5. **Mode USB** : Si disponible, essayer **USB Mode** > **Hardware CDC and JTAG** (permet HID + Serial)
+6. **Câble** : Utiliser un câble USB-C de données (pas seulement charge)
+
 ### USB HID ne fonctionne pas
 
-- Vérifiez que le firmware MicroPython a le support USB HID
+- Vérifiez que le firmware a le support USB HID
 - Installez `adafruit-circuitpython-bundle` si nécessaire
 - Vérifiez que `USB.begin()` est appelé avant `Keyboard.begin()`
 - Redémarrez l'ESP32 après le téléversement

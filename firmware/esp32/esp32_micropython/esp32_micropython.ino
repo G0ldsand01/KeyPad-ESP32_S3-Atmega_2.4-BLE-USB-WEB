@@ -58,6 +58,7 @@ uint16_t last_light_level = 0;
 int led_pwm_channel = 0;
 int led_brightness = 128;
 bool backlight_enabled = true;
+bool env_brightness_enabled = false;  // Toggle "Selon l'environnement" du web
 
 // BLE
 BLEServer* pServer = nullptr;
@@ -79,7 +80,14 @@ int ota_file_size = 0;
 String ota_file_content = "";
 
 String last_key_pressed = "";
-unsigned long last_display_update = 0;
+unsigned long last_light_poll = 0;
+unsigned long last_last_key_send = 0;
+#define LAST_KEY_SEND_MIN_MS 500   // Throttle: évite double envoi sur un même appui
+uint16_t last_light_sent_to_web = 0xFFFF;  // Valeur invalide pour forcer premier envoi
+unsigned long last_light_send_time = 0;
+#define LIGHT_SEND_MIN_INTERVAL_MS 2000  // Throttle: max 1 envoi / 2 s (sauf si valeur change)
+unsigned long last_uart_log_to_web = 0;
+#define UART_LOG_TO_WEB_INTERVAL_MS 1000  // Throttle: max 1 uart_log / s vers web (éviter flood BLE)
 
 // BLE Switch: PROFILE+1 maintenu 2s → déconnecte et permet de connecter un autre appareil
 unsigned long bleSwitchComboStart = 0;
@@ -90,9 +98,11 @@ unsigned long bleSwitchLastTrigger = 0;
 
 // ==================== DÉCLARATIONS FORWARD ====================
 void send_to_web(String data);
-void send_display_update_to_atmega();
+void send_uart_log_to_web(const char* dir, const char* msg);
+void send_last_key_to_atmega();
 void update_per_key_leds();
 void set_key_led_pressed(int row, int col, bool pressed);
+void update_builtin_led_from_light();
 
 // ==================== CALLBACKS (logique événementielle) ====================
 
@@ -118,9 +128,7 @@ void onKeyPress(uint8_t row, uint8_t col, bool pressed, bool isRepeat) {
 
     String keypress_msg = "{\"type\":\"keypress\",\"row\":" + String(row) + ",\"col\":" + String(col) + "}";
     send_to_web(keypress_msg);
-    send_display_update_to_atmega();
-    delay(20);  // Laisser le temps à l'UART d'envoyer
-    send_display_update_to_atmega();  // Envoi redondant pour garantir la réception ATmega
+    send_last_key_to_atmega();
 }
 
 void onEncoderRotate(int8_t dir, uint8_t steps) {
@@ -142,16 +150,17 @@ void processWebMessage(String message);
 void send_atmega_command(uint8_t cmd, uint8_t* payload = nullptr, int payload_len = 0);
 void read_atmega_uart();
 void send_light_level();
-void send_display_update_to_atmega();
+void send_last_key_to_atmega();
+void send_display_data_to_atmega();
 void handle_config_message(JsonObject& data);
 void handle_backlight_message(JsonObject& data);
 void handle_display_message(JsonObject& data);
 void send_config_to_web();
+uint8_t count_configured_keys();
 void send_status_message(String message);
 void handle_ota_start(JsonObject& data);
 void handle_ota_chunk(JsonObject& data);
 void handle_ota_end(JsonObject& data);
-uint8_t get_keycode(String symbol);
 void update_per_key_leds();
 int row_col_to_led_index(int row, int col);
 void apply_keymap_defaults();
@@ -165,6 +174,7 @@ class MyServerCallbacks: public BLEServerCallbacks {
         Serial.println("[BLE] Client connected");
         
         delay(800);
+        send_display_data_to_atmega();
         
         if (pInputCharacteristic != nullptr) {
             uint8_t empty_report[9] = {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -180,6 +190,7 @@ class MyServerCallbacks: public BLEServerCallbacks {
     void onDisconnect(BLEServer* pServer) {
         deviceConnected = false;
         hidOutput.setBleState(false, nullptr);
+        send_display_data_to_atmega();
         if (pInputCharacteristic != nullptr) {
             uint8_t release[9] = {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
             pInputCharacteristic->setValue(release, 9);
@@ -211,11 +222,12 @@ class SerialCharacteristicCallbacks: public BLECharacteristicCallbacks {
 // ==================== SETUP ====================
 
 void setup() {
-    delay(100);
+    // IMPORTANT: Tools > USB CDC On Boot > Enabled (pour voir le Serial)
+    // Délai pour laisser le port USB s'initialiser après le boot
+    delay(2000);
     
-    // Initialiser Serial pour debug
     Serial.begin(115200);
-    delay(1000);
+    delay(500);
     Serial.println("\n\n=== ESP32-S3 Macropad Initialization ===");
     Serial.println("Migration complète depuis MicroPython");
     
@@ -366,7 +378,11 @@ void setup() {
     
     preferences.begin("macropad", false);
     platformDetected = preferences.getString("platform", "unknown");
-    // ble_device_name: nom personnalisé de l'appareil connecté (ex: "Pixel", "PC Mathieu")
+    // Charger config backlight persistée (env_brightness = LED selon luminosité)
+    env_brightness_enabled = preferences.getBool("env_brightness", true);  // true = LED built-in suit la luminosité par défaut
+    backlight_enabled = preferences.getBool("backlight_en", true);
+    led_brightness = preferences.getUChar("led_brightness", 128);
+    led_brightness = max(0, min(255, led_brightness));
     Serial.printf("[SYSTEM] Platform: %s (Keypad HID - layout indépendant)\n", platformDetected.c_str());
     
     // Keymap par défaut au démarrage
@@ -378,18 +394,27 @@ void setup() {
     Serial.printf("[UART] ATmega UART initialized TX=%d, RX=%d, %d baud\n",
                   ATMEGA_UART_TX, ATMEGA_UART_RX, ATMEGA_UART_BAUD);
     
-    // Initialiser LED PWM (legacy)
+#if LED_PWM_PIN >= 0
+    // PWM LED externe (si pin différent de la built-in)
     ledcSetup(led_pwm_channel, 1000, 10);
     ledcAttachPin(LED_PWM_PIN, led_pwm_channel);
     ledcWrite(led_pwm_channel, backlight_enabled ? (led_brightness * 1023 / 255) : 0);
     Serial.printf("[LED] LED PWM initialized on GPIO %d\n", LED_PWM_PIN);
+#else
+    Serial.println("[LED] Built-in LED only (NeoPixel), no PWM");
+#endif
     
-    // Initialiser SK6812-E per-key strip
+#if ENABLE_LED_STRIP
     ledStrip.begin();
-    ledStrip.setBrightness(led_brightness);
-    ledStrip.show();
-    update_per_key_leds();
-    Serial.printf("[LED] SK6812 strip initialized on GPIO %d (%d LEDs)\n", LED_STRIP_PIN, LED_STRIP_COUNT);
+    ledStrip.setBrightness(255);
+    delay(10);
+    update_builtin_led_from_light();
+    Serial.printf("[LED] RGB initialized on GPIO %d (%d LED%s)\n", LED_STRIP_PIN, LED_STRIP_COUNT, LED_STRIP_COUNT > 1 ? "s" : "");
+#else
+    pinMode(LED_STRIP_PIN, OUTPUT);
+    digitalWrite(LED_STRIP_PIN, LOW);
+    Serial.println("[LED] RGB disabled");
+#endif
     
     // Modules (logique événementielle)
     keyMatrix.begin();
@@ -403,19 +428,7 @@ void setup() {
 
     hidOutput.begin(&Keyboard, &ConsumerControl);
     
-    // Activer le debug ATmega après un délai
-    delay(2000);
-    uint8_t debug_enable = 1;
-    send_atmega_command(CMD_SET_ATMEGA_DEBUG, &debug_enable, 1);
-    delay(50);
-    uint8_t log_level = 3;
-    send_atmega_command(CMD_SET_ATMEGA_LOG_LEVEL, &log_level, 1);
-    delay(50);
-    Serial.println("[UART] ATmega debug enabled");
-    
-    // Envoyer la mise à jour d'affichage initiale
-    delay(500);
-    send_display_update_to_atmega();
+    send_display_data_to_atmega();
     Serial.println("[MAIN] Initialization complete");
     Serial.println("Ready!");
 }
@@ -443,7 +456,7 @@ void loop() {
                 uint16_t connId = pServer->getConnId();
                 pServer->disconnect(connId);
                 Serial.println("[BLE] Switch appareil — déconnecté, prêt pour un autre appareil");
-                send_atmega_command(CMD_UPDATE_DISPLAY, nullptr, 0);
+                send_last_key_to_atmega();
             }
         }
     } else {
@@ -468,11 +481,14 @@ void loop() {
         oldDeviceConnected = deviceConnected;
     }
     
-    // Mettre à jour l'affichage ATmega périodiquement
-    if (now - last_display_update >= DISPLAY_UPDATE_INTERVAL_MS) {
-        send_display_update_to_atmega();
-        last_display_update = now;
+    // Luminosité ambiante: USB 30s, BLE 60s (pour LED + écran)
+    unsigned long light_interval = deviceConnected ? LIGHT_POLL_INTERVAL_BLE_MS : LIGHT_POLL_INTERVAL_MS;
+    if (now - last_light_poll >= light_interval) {
+        send_light_level();
     }
+    
+    // Transition progressive de la LED
+    update_builtin_led_from_light();
     
     delay(5);
 }
@@ -520,7 +536,7 @@ void processWebMessage(String message) {
     } else if (msg_type == "get_config") {
         send_config_to_web();
     } else if (msg_type == "get_light") {
-        send_light_level();
+        if (!deviceConnected) send_light_level();  // BLE: pas de poll light (déconnexions)
     } else if (msg_type == "status") {
         send_status_message("Macropad ready");
     } else if (msg_type == "settings") {
@@ -533,14 +549,12 @@ void processWebMessage(String message) {
             String name = settingsObj["bleDeviceName"].as<String>();
             preferences.putString("ble_device_name", name);
             Serial.printf("[CONFIG] BLE device name set: %s\n", name.c_str());
-            send_display_update_to_atmega();
         }
     } else if (msg_type == "set_device_name") {
         if (doc.containsKey("name")) {
             String name = doc["name"].as<String>();
             preferences.putString("ble_device_name", name);
             Serial.printf("[CONFIG] BLE device name set: %s\n", name.c_str());
-            send_display_update_to_atmega();
         }
     } else if (msg_type == "ota_start") {
         JsonObject otaObj = doc.as<JsonObject>();
@@ -594,6 +608,7 @@ void handle_config_message(JsonObject& data) {
     }
     
     Serial.println("[WEB] Keymap updated");
+    send_display_data_to_atmega();
     send_status_message("Configuration updated");
 }
 
@@ -603,13 +618,22 @@ void handle_backlight_message(JsonObject& data) {
     if (data.containsKey("enabled")) {
         backlight_enabled = data["enabled"].as<bool>();
         if (!backlight_enabled) {
+#if LED_PWM_PIN >= 0
             ledcWrite(led_pwm_channel, 0);
+#endif
+#if ENABLE_LED_STRIP
             ledStrip.clear();
             ledStrip.show();
+#endif
         } else {
-            ledcWrite(led_pwm_channel, led_brightness * 1023 / 255);
+#if LED_PWM_PIN >= 0
+            uint8_t pwm_val = (env_brightness_enabled && last_light_level >= LIGHT_THRESHOLD) ? 0 : led_brightness;
+            ledcWrite(led_pwm_channel, pwm_val * 1023 / 255);
+#endif
+#if ENABLE_LED_STRIP
             ledStrip.setBrightness(led_brightness);
             update_per_key_leds();
+#endif
         }
     }
     
@@ -617,17 +641,30 @@ void handle_backlight_message(JsonObject& data) {
         led_brightness = data["brightness"].as<uint8_t>();
         led_brightness = max(0, min(255, led_brightness));
         if (backlight_enabled) {
-            ledcWrite(led_pwm_channel, led_brightness * 1023 / 255);
+            uint8_t pwm_val = (env_brightness_enabled && last_light_level >= LIGHT_THRESHOLD) ? 0 : led_brightness;
+            ledcWrite(led_pwm_channel, pwm_val * 1023 / 255);
+#if ENABLE_LED_STRIP
             ledStrip.setBrightness(led_brightness);
             update_per_key_leds();
+#endif
         }
         Serial.printf("[LED] Brightness set to %d\n", led_brightness);
     }
     
     if (data.containsKey("envBrightness") || data.containsKey("env-brightness")) {
-        send_light_level();
+        env_brightness_enabled = data["envBrightness"].as<bool>() || data["env-brightness"].as<bool>();
+        preferences.putBool("env_brightness", env_brightness_enabled);
+        send_light_level();  // Mise à jour immédiate de la luminosité
     }
     
+    // Persister backlight pour survie au reboot
+    preferences.putBool("backlight_en", backlight_enabled);
+    preferences.putUChar("led_brightness", (uint8_t)led_brightness);
+    
+#if ENABLE_LED_STRIP
+    update_builtin_led_from_light();
+#endif
+    send_last_key_to_atmega();
     Serial.println("[WEB] Backlight config updated");
     send_status_message("Backlight config updated");
 }
@@ -697,26 +734,99 @@ int row_col_to_led_index(int row, int col) {
     return idx;
 }
 
-void update_per_key_leds() {
-    if (!backlight_enabled) return;
-    
-    uint8_t r = (led_brightness * 255) / 255;
-    uint8_t g = (led_brightness * 255) / 255;
-    uint8_t b = (led_brightness * 255) / 255;
-    uint32_t color = ledStrip.Color(r, g, b);
-    
-    for (int i = 0; i < LED_STRIP_COUNT; i++) {
-        ledStrip.setPixelColor(i, color);
+// Transition progressive: step plus grand = extinction plus rapide
+#define LED_FADE_STEP 24
+#define LED_FADE_INTERVAL_MS 15
+static uint8_t led_current_r = 0, led_current_g = 0, led_current_b = 0;
+static uint8_t led_target_r = 0, led_target_g = 0, led_target_b = 0;
+static unsigned long last_led_fade = 0;
+
+void update_builtin_led_from_light() {
+#if ENABLE_LED_STRIP
+    uint8_t tr, tg, tb;
+    if (env_brightness_enabled) {
+        // Toggle "Selon l'environnement" actif: light < 500 = ON (graduel), light >= 500 = OFF (graduel)
+        bool is_dark;
+#if LIGHT_SENSOR_INVERTED
+        is_dark = (last_light_level >= LIGHT_THRESHOLD);
+#else
+        is_dark = (last_light_level < LIGHT_THRESHOLD);
+#endif
+        if (!is_dark) {
+            tr = tg = tb = 0;
+        } else {
+            uint8_t v = backlight_enabled ? led_brightness : 80;
+            if (v < 20) v = 20;
+            tr = v;
+            tg = (v * 180) / 255;
+            tb = (v * 50) / 255;
+        }
+    } else {
+        // Toggle désactivé: luminosité manuelle (backlight_enabled + led_brightness)
+        if (backlight_enabled) {
+            uint8_t v = led_brightness;
+            if (v < 20) v = 20;
+            tr = v;
+            tg = (v * 180) / 255;
+            tb = (v * 50) / 255;
+        } else {
+            tr = tg = tb = 0;
+        }
     }
+    led_target_r = tr;
+    led_target_g = tg;
+    led_target_b = tb;
+    
+    // Transition progressive (toutes les ~20ms)
+    unsigned long now = millis();
+    if (now - last_led_fade >= LED_FADE_INTERVAL_MS) {
+        last_led_fade = now;
+        uint8_t step = LED_FADE_STEP;
+        if (led_current_r < led_target_r) {
+            led_current_r = (led_target_r - led_current_r <= step) ? led_target_r : led_current_r + step;
+        } else if (led_current_r > led_target_r) {
+            led_current_r = (led_current_r - led_target_r <= step) ? led_target_r : led_current_r - step;
+        }
+        if (led_current_g < led_target_g) {
+            led_current_g = (led_target_g - led_current_g <= step) ? led_target_g : led_current_g + step;
+        } else if (led_current_g > led_target_g) {
+            led_current_g = (led_current_g - led_target_g <= step) ? led_target_g : led_current_g - step;
+        }
+        if (led_current_b < led_target_b) {
+            led_current_b = (led_target_b - led_current_b <= step) ? led_target_b : led_current_b + step;
+        } else if (led_current_b > led_target_b) {
+            led_current_b = (led_current_b - led_target_b <= step) ? led_target_b : led_current_b - step;
+        }
+    }
+    
+    ledStrip.setPixelColor(0, ledStrip.Color(led_current_r, led_current_g, led_current_b));
     ledStrip.show();
+#endif
+
+#if LED_PWM_PIN >= 0
+    // PWM LED externe (si présent)
+    if (env_brightness_enabled && last_light_level >= LIGHT_THRESHOLD) {
+        ledcWrite(led_pwm_channel, 0);
+    } else if (env_brightness_enabled && last_light_level < LIGHT_THRESHOLD) {
+        uint8_t v = backlight_enabled ? led_brightness : 80;
+        ledcWrite(led_pwm_channel, v * 1023 / 255);
+    }
+#endif
+}
+
+void update_per_key_leds() {
+#if ENABLE_LED_STRIP
+    update_builtin_led_from_light();
+#endif
 }
 
 void set_key_led_pressed(int row, int col, bool pressed) {
-    if (!backlight_enabled) return;
-    int idx = row_col_to_led_index(row, col);
-    uint32_t color = pressed ? ledStrip.Color(255, 255, 255) : ledStrip.Color(led_brightness, led_brightness, led_brightness);
-    ledStrip.setPixelColor(idx, color);
-    ledStrip.show();
+#if ENABLE_LED_STRIP
+    // Pas de flash blanc à l'appui — la LED reste sur la luminosité ambiante
+    if (!pressed) {
+        update_builtin_led_from_light();
+    }
+#endif
 }
 
 // ==================== OTA UPDATES ====================
@@ -819,6 +929,23 @@ void handle_ota_end(JsonObject& data) {
 
 // ==================== COMMUNICATION ATmega ====================
 
+void send_uart_log_to_web(const char* dir, const char* msg) {
+    unsigned long now = millis();
+    if (deviceConnected && (now - last_uart_log_to_web) < UART_LOG_TO_WEB_INTERVAL_MS) {
+        return;  // Throttle: éviter flood BLE
+    }
+    last_uart_log_to_web = now;
+    String json = "{\"type\":\"uart_log\",\"dir\":\"";
+    json += dir;
+    json += "\",\"msg\":\"";
+    for (const char* p = msg; *p; p++) {
+        if (*p == '"' || *p == '\\') json += '\\';
+        json += *p;
+    }
+    json += "\"}";
+    send_to_web(json);
+}
+
 void send_to_web(String data) {
     Serial.println(data);
     if (deviceConnected && BLE_AVAILABLE && pSerialCharacteristic != nullptr) {
@@ -826,6 +953,21 @@ void send_to_web(String data) {
         pSerialCharacteristic->setValue(message.c_str());
         pSerialCharacteristic->notify();
     }
+}
+
+// Envoyer la luminosité au web (USB et BLE). Throttle 2s pour éviter flood BLE.
+void send_light_to_web_if_needed(uint16_t light_value) {
+    unsigned long now = millis();
+    bool value_changed = (light_value != last_light_sent_to_web);
+    bool interval_elapsed = (now - last_light_send_time >= LIGHT_SEND_MIN_INTERVAL_MS);
+    if (value_changed || interval_elapsed) {
+        last_light_sent_to_web = light_value;
+        last_light_send_time = now;
+        String msg = "{\"type\":\"light\",\"level\":" + String(light_value) + "}";
+        send_to_web(msg);  // USB: Serial | BLE: notify
+        send_last_key_to_atmega();  // Mettre à jour le statut rétro-éclairage sur l'écran
+    }
+    update_builtin_led_from_light();
 }
 
 void send_atmega_command(uint8_t cmd, uint8_t* payload, int payload_len) {
@@ -836,6 +978,27 @@ void send_atmega_command(uint8_t cmd, uint8_t* payload, int payload_len) {
     SerialAtmega.write('\n');
     SerialAtmega.flush();
     Serial.printf("[UART] Sent command 0x%02X (%d bytes payload)\n", cmd, payload_len);
+    
+    // Log vers la console web (sauf CMD_READ_LIGHT et CMD_SET_LAST_KEY pour éviter flood BLE)
+    if (cmd != CMD_READ_LIGHT && cmd != CMD_SET_LAST_KEY) {
+        char buf[128];
+        int n = 0;
+        if (payload_len > 0 && payload != nullptr) {
+            n = snprintf(buf, sizeof(buf), "CMD 0x%02X + %d bytes", cmd, payload_len);
+            if (payload_len <= 8 && n < (int)sizeof(buf) - 4) {
+                n += snprintf(buf + n, sizeof(buf) - n, " [");
+                for (int i = 0; i < payload_len && n < (int)sizeof(buf) - 4; i++) {
+                    n += snprintf(buf + n, sizeof(buf) - n, "%02X ", payload[i]);
+                }
+                if (n < (int)sizeof(buf) - 2) snprintf(buf + n, sizeof(buf) - n, "]");
+            }
+        } else {
+            const char* names[] = {"", "READ_LIGHT", "SET_LED", "GET_LED", "UPDATE_DISPLAY", "SET_DISPLAY_DATA", "", "", "SET_IMAGE", "IMAGE_CHUNK", "ATMEGA_DEBUG", "ATMEGA_LOG"};
+            const char* name = (cmd < 12) ? names[cmd] : "?";
+            snprintf(buf, sizeof(buf), "CMD 0x%02X %s", cmd, name);
+        }
+        send_uart_log_to_web("tx", buf);
+    }
 }
 
 void read_atmega_uart() {
@@ -854,14 +1017,12 @@ void read_atmega_uart() {
         return;
     }
     
-    // Vérifier si c'est une réponse binaire CMD_READ_LIGHT
-    if (data.length() >= 4 && (uint8_t)data.charAt(0) == CMD_READ_LIGHT) {
+    // Vérifier si c'est une réponse binaire CMD_READ_LIGHT [0x01][low][high][\n]
+    if (data.length() >= 3 && (uint8_t)data.charAt(0) == CMD_READ_LIGHT) {
         uint16_t light_value = (uint8_t)data.charAt(1) | ((uint8_t)data.charAt(2) << 8);
         last_light_level = light_value;
         Serial.printf("[ATMEGA LIGHT] Level (binary): %d\n", light_value);
-        
-        String msg = "{\"type\":\"light\",\"level\":" + String(light_value) + "}";
-        send_to_web(msg);
+        send_light_to_web_if_needed(light_value);
         return;
     }
     
@@ -871,130 +1032,132 @@ void read_atmega_uart() {
     int newlinePos;
     while ((newlinePos = atmega_rx_buffer.indexOf('\n')) >= 0) {
         String line = atmega_rx_buffer.substring(0, newlinePos);
+        line.trim();  // Enlever \r si présent
         atmega_rx_buffer = atmega_rx_buffer.substring(newlinePos + 1);
         
         if (line.length() == 0) continue;
         
-        // Vérifier si c'est un message de lumière (format: "LIGHT=XXX")
+        // Réponse binaire CMD_READ_LIGHT (reçu par morceaux)
+        if (line.length() >= 3 && (uint8_t)line.charAt(0) == CMD_READ_LIGHT) {
+            uint16_t light_value = (uint8_t)line.charAt(1) | ((uint8_t)line.charAt(2) << 8);
+            last_light_level = light_value;
+            Serial.printf("[ATMEGA LIGHT] Level (binary): %d\n", light_value);
+            send_light_to_web_if_needed(light_value);
+            continue;
+        }
+        // Format ASCII "LIGHT=XXX"
         if (line.startsWith("LIGHT=")) {
             uint16_t light_value = line.substring(6).toInt();
             last_light_level = light_value;
-            Serial.printf("[ATMEGA LIGHT] Level: %d\n", light_value);
-            
-            String msg = "{\"type\":\"light\",\"level\":" + String(light_value) + "}";
-            send_to_web(msg);
-        } else {
-            Serial.printf("[ATMEGA] %s\n", line.c_str());
+            Serial.printf("[ATMEGA LIGHT] Level (ASCII): %d\n", light_value);
+            send_light_to_web_if_needed(light_value);
+            continue;
         }
+        // Format debug ATmega "[LIGHT] Level: NNN (0x...)"
+        if (line.startsWith("[LIGHT] Level: ")) {
+            int spacePos = line.indexOf(' ', 15);
+            if (spacePos > 15) {
+                uint16_t light_value = (uint16_t)line.substring(15, spacePos).toInt();
+                if (light_value <= 1023) {
+                    last_light_level = light_value;
+                    send_light_to_web_if_needed(light_value);
+                }
+            }
+            continue;
+        }
+        Serial.printf("[ATMEGA] %s\n", line.c_str());
+        send_uart_log_to_web("rx", line.c_str());
     }
 }
 
 void send_light_level() {
+    unsigned long now = millis();
+    if (last_light_poll != 0 && (now - last_light_poll) < LIGHT_POLL_MIN_INTERVAL_MS) return;
+    last_light_poll = now;
     send_atmega_command(CMD_READ_LIGHT, nullptr, 0);
-    
-    // Envoyer la dernière valeur connue en attendant
-    String response = "{\"type\":\"light\",\"level\":" + String(last_light_level) + "}";
-    send_to_web(response);
+    send_light_to_web_if_needed(last_light_level);
 }
 
-void send_display_update_to_atmega() {
-    String profile = "Profile 1";
-    String mode = "data";
-    String output_mode = deviceConnected ? "bluetooth" : "usb";
-    
-    int keys_count = 0;
+void send_last_key_to_atmega() {
+    String last_key = last_key_pressed.length() > 0 ? last_key_pressed : "";
+    int len = last_key.length();
+    if (len > 15) len = 15;
+    uint8_t payload[20];
+    int pos = 0;
+    payload[pos++] = len & 0xFF;
+    if (len > 0) {
+        memcpy(&payload[pos], last_key.c_str(), len);
+        pos += len;
+    }
+    // Rétro-éclairage pour l'écran: selon env_brightness_enabled ou manuel
+    int back_en;
+    uint8_t back_val;
+    if (env_brightness_enabled) {
+#if LIGHT_SENSOR_INVERTED
+        back_en = (last_light_level >= LIGHT_THRESHOLD) ? 1 : 0;
+#else
+        back_en = (last_light_level < LIGHT_THRESHOLD) ? 1 : 0;
+#endif
+        back_val = back_en ? (led_brightness & 0xFF) : 0;
+    } else {
+        back_en = backlight_enabled ? 1 : 0;
+        back_val = back_en ? (led_brightness & 0xFF) : 0;
+    }
+    payload[pos++] = back_en & 0xFF;
+    payload[pos++] = back_val;
+    send_atmega_command(CMD_SET_LAST_KEY, payload, pos);
+}
+
+uint8_t count_configured_keys() {
+    uint8_t count = 0;
     for (int r = 0; r < NUM_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
-            if (KEYMAP[r][c].length() > 0) {
-                keys_count++;
-            }
+            if (KEYMAP[r][c].length() > 0) count++;
         }
     }
-    
-    String last_key = last_key_pressed.length() > 0 ? last_key_pressed : "";
-    int back_en = backlight_enabled ? 1 : 0;
-    int back_brightness = led_brightness;
-    
-    // Obtenir l'heure actuelle (format HH:MM:SS)
-    unsigned long seconds = millis() / 1000;
-    int hours = (seconds / 3600) % 24;
-    int minutes = (seconds / 60) % 60;
-    int secs = seconds % 60;
-    char time_str[9];
-    snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", hours, minutes, secs);
-    String current_time = String(time_str);
-    
-    // Construire le payload en format binaire selon le format attendu par l'ATmega
-    // Format: [brightness][mode_len][mode][profile_len][profile][output_len][output][keys_count]
-    // [last_key_len][last_key][backlight_enabled][backlight_brightness][time_len][time]
-    uint8_t payload[256];
+    return count;
+}
+
+void send_display_data_to_atmega() {
+    uint8_t payload[80];
     int pos = 0;
-    
-    // Brightness
-    payload[pos++] = back_brightness & 0xFF;
-    
-    // Mode
-    int mode_len = mode.length();
-    payload[pos++] = mode_len & 0xFF;
-    memcpy(&payload[pos], mode.c_str(), mode_len);
+    payload[pos++] = led_brightness;
+    const char* mode = "data";
+    uint8_t mode_len = strlen(mode);
+    payload[pos++] = mode_len;
+    memcpy(&payload[pos], mode, mode_len);
     pos += mode_len;
-    
-    // Profile
-    int profile_len = profile.length();
-    payload[pos++] = profile_len & 0xFF;
-    memcpy(&payload[pos], profile.c_str(), profile_len);
+    const char* profile = "Profil 1";
+    uint8_t profile_len = strlen(profile);
+    payload[pos++] = profile_len;
+    memcpy(&payload[pos], profile, profile_len);
     pos += profile_len;
-    
-    // Output mode
-    int output_len = output_mode.length();
-    payload[pos++] = output_len & 0xFF;
-    memcpy(&payload[pos], output_mode.c_str(), output_len);
+    const char* output = deviceConnected ? "bluetooth" : "usb";
+    uint8_t output_len = strlen(output);
+    payload[pos++] = output_len;
+    memcpy(&payload[pos], output, output_len);
     pos += output_len;
-    
-    // Keys count
-    payload[pos++] = keys_count & 0xFF;
-    
-    // Last key pressed
-    int last_key_len = last_key.length();
-    payload[pos++] = last_key_len & 0xFF;
+    payload[pos++] = count_configured_keys();
+    uint8_t last_key_len = min((int)last_key_pressed.length(), 15);
+    payload[pos++] = last_key_len;
     if (last_key_len > 0) {
-        memcpy(&payload[pos], last_key.c_str(), last_key_len);
+        memcpy(&payload[pos], last_key_pressed.c_str(), last_key_len);
         pos += last_key_len;
     }
-    
-    // Backlight enabled
-    payload[pos++] = back_en & 0xFF;
-    
-    // Backlight brightness
-    payload[pos++] = back_brightness & 0xFF;
-    
-    // Time (optionnel, comme dans le main.py)
-    int time_len = current_time.length();
-    payload[pos++] = time_len & 0xFF;
-    if (time_len > 0) {
-        memcpy(&payload[pos], current_time.c_str(), time_len);
-        pos += time_len;
-    }
-    
-    // Appareil connecté: Wired si USB, sinon nom personnalisé ou "Bluetooth"
-    String device_name;
-    if (output_mode == "usb") {
-        device_name = "Wired";
-    } else if (deviceConnected) {
-        String custom = preferences.getString("ble_device_name", "");
-        device_name = (custom.length() > 0) ? custom.substring(0, 28) : "Bluetooth";
+    int back_en;
+    uint8_t back_val;
+    if (env_brightness_enabled) {
+#if LIGHT_SENSOR_INVERTED
+        back_en = (last_light_level >= LIGHT_THRESHOLD) ? 1 : 0;
+#else
+        back_en = (last_light_level < LIGHT_THRESHOLD) ? 1 : 0;
+#endif
+        back_val = back_en ? (led_brightness & 0xFF) : 0;
     } else {
-        device_name = "Bluetooth (En attente)";
+        back_en = backlight_enabled ? 1 : 0;
+        back_val = back_en ? (led_brightness & 0xFF) : 0;
     }
-    int device_len = device_name.length();
-    payload[pos++] = device_len & 0xFF;
-    if (device_len > 0) {
-        memcpy(&payload[pos], device_name.c_str(), device_len);
-        pos += device_len;
-    }
-    
+    payload[pos++] = back_en & 0xFF;
+    payload[pos++] = back_val;
     send_atmega_command(CMD_SET_DISPLAY_DATA, payload, pos);
-    
-    Serial.printf("[UART] Sending display update: profile=%s, mode=%s, keys=%d, last_key=%s, device=%s\n",
-                  profile.c_str(), mode.c_str(), keys_count, last_key.c_str(), device_name.c_str());
 }

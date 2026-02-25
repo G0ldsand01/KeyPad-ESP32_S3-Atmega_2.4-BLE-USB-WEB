@@ -949,6 +949,40 @@ header h1:hover .header-icon {
     margin-bottom: 14px;
 }
 
+/* Moniteur série intégré */
+.serial-monitor-section .form-hint {
+    margin-bottom: 10px;
+}
+
+.serial-monitor-toolbar {
+    margin-bottom: 8px;
+}
+
+.serial-monitor-toolbar .btn-sm {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+}
+
+.serial-monitor-output {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    background: #0d1117;
+    color: #c9d1d9;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px;
+    height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+[data-theme="light"] .serial-monitor-output {
+    background: #f6f8fa;
+    color: #24292f;
+}
+
 [data-theme="light"] .panel-title {
     color: #000000;
 }
@@ -1974,7 +2008,207 @@ textarea:invalid:not(:placeholder-shown):focus {
     stroke-width: 2;
 }
 
-/* Light meter */
+/* Backlight panel full width */
+.backlight-panel-full {
+    width: 100%;
+    max-width: 100%;
+}
+
+.backlight-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 24px;
+    font-size: 1.35rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.backlight-title-icon {
+    width: 24px;
+    height: 24px;
+    color: var(--primary-color);
+}
+
+.backlight-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.5fr;
+    gap: 28px;
+    margin-bottom: 24px;
+}
+
+@media (max-width: 768px) {
+    .backlight-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.backlight-section {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 20px;
+}
+
+[data-theme="light"] .backlight-section {
+    background: rgba(0, 0, 0, 0.02);
+}
+
+.backlight-section h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--primary-color);
+}
+
+.form-hint {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 6px;
+    margin-left: 28px;
+}
+
+.slider-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.slider-row .slider {
+    flex: 1;
+}
+
+.slider-value {
+    font-weight: 600;
+    min-width: 42px;
+    color: var(--primary-color);
+}
+
+/* Light meter - design amélioré */
+.light-display {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.light-meter-wrapper {
+    width: 100%;
+}
+
+.light-meter-track {
+    height: 12px;
+    background: var(--surface-color);
+    border-radius: 6px;
+    overflow: hidden;
+    position: relative;
+}
+
+[data-theme="light"] .light-meter-track {
+    background: #e4e4e7;
+}
+
+.light-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, 
+        #1e3a5f 0%, 
+        #2563eb 25%, 
+        #f59e0b 50%, 
+        #22c55e 75%, 
+        #86efac 100%);
+    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    border-radius: 6px;
+}
+
+.light-meter-zones {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.zone-dark { color: #60a5fa; }
+.zone-mid { color: #fbbf24; }
+.zone-bright { color: #4ade80; }
+
+.light-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+
+.light-stat {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px 14px;
+    text-align: center;
+}
+
+[data-theme="light"] .light-stat {
+    background: #f8fafc;
+}
+
+.light-stat-label {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+}
+
+.light-stat-value {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.light-stat-unit {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.light-stat-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.light-stat-badge.on {
+    background: rgba(34, 197, 94, 0.2);
+    color: #22c55e;
+}
+
+.light-stat-badge.off {
+    background: rgba(148, 163, 184, 0.2);
+    color: #94a3b8;
+}
+
+.backlight-actions {
+    margin-top: 8px;
+}
+
+/* Legacy light meter (fallback) */
 .light-meter {
     width: 100%;
     height: 4px;
@@ -1988,31 +2222,6 @@ textarea:invalid:not(:placeholder-shown):focus {
 
 [data-theme="light"] .light-meter {
     background: #e4e4e7;
-}
-
-.light-bar {
-    height: 100%;
-    width: 0%;
-    background: linear-gradient(90deg, var(--warning-color) 0%, var(--success-color) 100%);
-    transition: width 0.3s ease;
-    border-radius: 2px;
-    display: block;
-}
-
-.light-meter span {
-    display: block;
-    font-size: 0.875rem;
-    color: var(--text-secondary);
-    font-weight: 500;
-    margin-top: 8px;
-}
-
-.light-meter span {
-    font-size: 0.875rem;
-    color: var(--text-secondary);
-    font-weight: 500;
-    white-space: nowrap;
-    flex-shrink: 0;
 }
 
 .light-meter-fill {
@@ -2066,6 +2275,11 @@ textarea:invalid:not(:placeholder-shown):focus {
     grid-template-columns: repeat(2, 1fr);
     gap: 24px;
     margin-bottom: 24px;
+}
+
+.hardware-layout-full {
+    grid-template-columns: 1fr;
+    max-width: 100%;
 }
 .display-layout {
     display: grid;

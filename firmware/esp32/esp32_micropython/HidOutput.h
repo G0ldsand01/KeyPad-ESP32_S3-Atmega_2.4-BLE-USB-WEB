@@ -16,6 +16,11 @@ struct KeycodeEntry {
     uint8_t code;
 };
 
+struct KeycodeResult {
+    uint8_t code;
+    uint8_t modifier;  // 0x02 = Shift, etc.
+};
+
 class HidOutput {
 public:
     void begin(USBHIDKeyboard* keyboard, USBHIDConsumerControl* consumer = nullptr);
@@ -29,6 +34,7 @@ public:
 
     static bool keyShouldRepeat(const String& symbol);
     static uint8_t getKeycode(const String& symbol);
+    static bool getKeycodeAndModifier(const String& symbol, KeycodeResult* out);
 
 private:
     USBHIDKeyboard* _keyboard = nullptr;

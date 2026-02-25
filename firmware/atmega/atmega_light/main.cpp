@@ -3,7 +3,7 @@
  * 
  * Fonctionnalités:
  * - Lecture du capteur TEMT6000 (luminosité ambiante)
- * - Communication UART avec ESP32 (115200 bauds)
+ * - Communication UART avec ESP32 (9600 bauds, 8 MHz)
  * - Contrôle PWM de la LED de backlight
  * - Affichage sur écran ST7789 TFT (SPI)
  * 
@@ -25,14 +25,12 @@
 #include <util/delay.h>
 #include <string.h>
 
-// Configuration UART
-#define UART_BAUD 115200
-#define UART_UBRR (F_CPU / 16 / UART_BAUD - 1)
-// F_CPU devrait être défini dans les options du projet (Project Properties > Toolchain > AVR/GNU C++ Compiler > Symbols)
-// Si ce n'est pas le cas, décommentez la ligne suivante :
+// Configuration UART — 9600 baud @ 8 MHz (oscillateur interne)
+#define UART_BAUD 9600
 #ifndef F_CPU
-#define F_CPU 16000000UL
+#define F_CPU 8000000UL
 #endif
+#define UART_UBRR 51  // 9600 @ 8MHz
 
 // Protocole UART
 // Format: [CMD] [DATA...] [\n]
@@ -45,6 +43,10 @@
 #define CMD_SET_DISPLAY_IMAGE_CHUNK 0x09  // Recevoir un chunk d'image
 #define CMD_SET_ATMEGA_DEBUG 0x0A  // Activer/désactiver le debug UART sur l'ATmega
 #define CMD_SET_ATMEGA_LOG_LEVEL 0x0B  // Définir le niveau de log de l'ATmega
+#define CMD_SET_LAST_KEY 0x0C  // Envoyer uniquement la dernière touche appuyée
+
+// Capteur TEMT6000: 0 = ADC élevé = clair (LED OFF si >= 500), ADC bas = sombre (LED ON)
+#define LIGHT_SENSOR_INVERTED 0
 
 // Configuration ST7789
 // Pour un écran 1.9" 170x320, utiliser 170 comme hauteur
@@ -83,6 +85,7 @@ volatile uint8_t uart_cmd_pending = 0;  // 1 = commande reçue, à traiter dans 
 volatile uint8_t uart_command = 0;
 volatile uint8_t led_brightness = 0;  // 0-255
 volatile uint16_t light_level = 0;    // Valeur ADC du TEMT6000 (0-1023)
+volatile uint8_t esp32_backlight_ticks = 0;  // Si > 0: utiliser display_backlight (priorité ESP32)
 
 // Variables pour la réception d'images
 #define IMAGE_CHUNK_SIZE 64  // Taille des chunks pour transmission UART (plus grand que I2C)
@@ -636,7 +639,7 @@ void st7789_update_display(void) {
     
     // Ligne 2: Nombre de touches configurées
     uint16_t line2_y = line1_y + 30;
-    uint16_t keys_bar_width = (display_keys_count * 200) / 20;  // 20 touches max
+    uint16_t keys_bar_width = (display_keys_count * 200) / 17;  // 17 touches max
     if (keys_bar_width > 200) keys_bar_width = 200;
     st7789_fill_rect(10, line2_y, 200, 20, color_gray);
     if (keys_bar_width > 0) {
@@ -688,10 +691,8 @@ void st7789_update_display(void) {
 
 // Initialiser UART
 void uart_init(void) {
-    // Calculer UBRR pour le baud rate
-    uint16_t ubrr = (uint16_t)((F_CPU / 16UL / UART_BAUD) - 1);
-    UBRR0H = (uint8_t)(ubrr >> 8);
-    UBRR0L = (uint8_t)(ubrr & 0xFF);
+    UBRR0H = (uint8_t)(UART_UBRR >> 8);
+    UBRR0L = (uint8_t)(UART_UBRR & 0xFF);
     
     // Activer réception et transmission, interruptions de réception
     UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0);
@@ -725,8 +726,7 @@ int main(void) {
     
     pwm_init();
     debug_print("PWM initialized\r\n");
-    // Forcer le rétro-éclairage à fond pour les tests (LED backlight toujours ON)
-    set_led_brightness(255);
+    // LED backlight: contrôlée par light_level (>= 500 = ON)
     
     spi_init();
     debug_print("SPI initialized\r\n");
@@ -768,8 +768,27 @@ int main(void) {
         adc_counter++;
         if (adc_counter >= 5) {  // ~100ms (5 * 20ms) pour l'ADC
             adc_counter = 0;
-            // Pour l'instant, on lit seulement la luminosité sans toucher au backlight
             light_level = adc_read();
+            // LED: priorité ESP32 (display_backlight) si commande récente, sinon logique locale
+            if (esp32_backlight_ticks > 0) {
+                esp32_backlight_ticks--;
+                set_led_brightness(display_backlight_enabled ? display_backlight_brightness : 0);
+            } else {
+                // ADC >= 500 = clair -> LED OFF. ADC < 500 = sombre -> LED ON
+#if LIGHT_SENSOR_INVERTED
+                if (light_level >= 500) {
+                    set_led_brightness(255);  // Inversé: haut = sombre
+                } else {
+                    set_led_brightness(0);
+                }
+#else
+                if (light_level >= 500) {
+                    set_led_brightness(0);    // Clair -> LED OFF
+                } else {
+                    set_led_brightness(255);  // Sombre -> LED ON
+                }
+#endif
+            }
         }
         
         // Rafraîchissement d'affichage de la lumière - toutes les ~200ms
@@ -791,13 +810,7 @@ int main(void) {
             }
         }
         
-        // Envoyer la luminosité sur l'UART toutes les 1 seconde (~20ms * 50)
-        static uint16_t light_send_counter = 0;
-        light_send_counter++;
-        if (light_send_counter >= 50) {
-            light_send_counter = 0;
-            uart_send_light_ascii();
-        }
+        // L'ESP32 demande la luminosité via CMD_READ_LIGHT toutes les 2 s — pas besoin d'envoi périodique
         
         // Envoyer un message de debug toutes les 5 secondes (réduit pour moins de spam)
         static uint16_t debug_counter = 0;
@@ -913,8 +926,8 @@ void display_light_level_on_screen(uint16_t value) {
 #define PANEL_Y 30
 #define PANEL_W 310
 #define PANEL_H 175
-#define INNER_BG 0x1082
-#define BORDER_GRAY 0x8410
+#define INNER_BG 0x0000     /* Noir - fond du panneau */
+#define BORDER_GRAY 0x4208  /* Gris foncé - bordures et séparateur */
 #define WHITE_COL 0xFFFF
 #define BLACK_COL 0x0000
 #define CONTENT_HEIGHT (ZONE_LINE_H + 2 + 1 + 2 + (7 * ZONE_LINE_H))  // 133
@@ -1058,7 +1071,7 @@ void display_update_partial(uint8_t force_key_device) {
             while (n > 0 && i < 3) { nb[i++] = '0' + (n % 10); n /= 10; }
             while (i > 0 && pos < 47) buf[pos++] = nb[--i];
         }
-        buf[pos++] = '/'; buf[pos++] = '2'; buf[pos++] = '0';
+        buf[pos++] = '/'; buf[pos++] = '1'; buf[pos++] = '7';
         buf[pos] = '\0';
         st7789_fill_rect(ZONE_X, y_keys, ZONE_W, ZONE_LINE_H, INNER_BG);
         st7789_draw_text(ZONE_X, y_keys, buf, WHITE_COL, INNER_BG);
@@ -1242,6 +1255,29 @@ void processUartCommand() {
                 
                 // Mise à jour partielle (force last_key et device à chaque réception UART)
                 display_update_partial(1);
+            }
+            break;
+            
+        case CMD_SET_LAST_KEY:
+            if (uart_buffer_index >= 2) {
+                uint8_t last_key_len = uart_buffer[1];
+                uint8_t pos = 2;
+                if (last_key_len < 16) {
+                    if (last_key_len > 0 && (pos + last_key_len) <= uart_buffer_index) {
+                        memcpy((void*)display_last_key, (const void*)&uart_buffer[pos], last_key_len);
+                        display_last_key[last_key_len] = '\0';
+                        pos += last_key_len;
+                    } else if (last_key_len == 0) {
+                        display_last_key[0] = '\0';
+                    }
+                    if (pos + 2 <= uart_buffer_index) {
+                        display_backlight_enabled = uart_buffer[pos++];
+                        display_backlight_brightness = uart_buffer[pos++];
+                        esp32_backlight_ticks = 100;  // 10 s de priorité ESP32 (~100 * 100ms)
+                        set_led_brightness(display_backlight_enabled ? display_backlight_brightness : 0);
+                    }
+                    display_update_partial(1);
+                }
             }
             break;
             

@@ -44,9 +44,13 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define BLE_SWITCH_COMBO_MS 2000
 
 // ─── UART ATmega ────────────────────────────────────────────────────────────
+// Câblage: ESP32 TX(10) -> 2k2 -> ATmega RX(PD0)  |  ATmega TX(PD1) -> diviseur 2k2/3k3 -> ESP32 RX(11)
+// IMPORTANT: L'ATmega en 5V envoie 5V sur PD1. L'ESP32 n'est PAS 5V tolerant!
+// Diviseur requis: PD1 -> 2k2 -> [jonction vers ESP32 RX] -> 3k3 -> GND  (≈3V)
+// GPIO 43/44 = terminal USB (ne pas utiliser pour ATmega)
 #define ATMEGA_UART_TX 10
 #define ATMEGA_UART_RX 11
-#define ATMEGA_UART_BAUD 115200
+#define ATMEGA_UART_BAUD 9600
 
 #define CMD_READ_LIGHT 0x01
 #define CMD_SET_LED 0x02
@@ -57,11 +61,14 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define CMD_SET_DISPLAY_IMAGE_CHUNK 0x09
 #define CMD_SET_ATMEGA_DEBUG 0x0A
 #define CMD_SET_ATMEGA_LOG_LEVEL 0x0B
+#define CMD_SET_LAST_KEY 0x0C
 
 // ─── LEDs ───────────────────────────────────────────────────────────────────
-#define LED_PWM_PIN 2
-#define LED_STRIP_PIN 48
-#define LED_STRIP_COUNT 17
+// Built-in RGB LED (ESP32-S3 DevKit): NeoPixel sur GPIO 38 — contrôlé par ledStrip
+#define ENABLE_LED_STRIP 1   // 1 = built-in RGB LED (ESP32-S3 DevKit)
+#define LED_STRIP_PIN 38    // Built-in RGB: GPIO 38 (v1.1) ou 48 (v1.0)
+#define LED_STRIP_COUNT 1   // Single built-in LED (pas de strip externe)
+#define LED_PWM_PIN -1      // -1 = pas de PWM séparé (built-in = NeoPixel uniquement)
 
 // ─── Keymap par défaut (grille physique) ────────────────────────────────────
 // [PROFILE] [/] [*] [-]
@@ -117,5 +124,18 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 
 // ─── Display update ─────────────────────────────────────────────────────────
 #define DISPLAY_UPDATE_INTERVAL_MS 1000
+
+// ─── Alimentation batterie (BLE) ─────────────────────────────────────────────
+// Si BLE n'est pas visible avec batterie 3.7V: la radio BLE consomme ~80-100 mA en TX.
+// Vérifier: (1) Tension stable 3.0-3.6V sur ESP32 (LDO si batterie 4.2V max)
+//           (2) Courant suffisant (batterie dégradée = chute de tension sous charge)
+//           (3) Entrée 5V: utiliser un boost 3.7V→5V, pas de connexion directe batterie→5V
+
+// ─── Light sensor poll ──────────────────────────────────────────────────────
+#define LIGHT_POLL_INTERVAL_MS 30000   // USB: mise à jour toutes les 30 s
+#define LIGHT_POLL_INTERVAL_BLE_MS 60000  // BLE: toutes les 60 s (pour LED)
+#define LIGHT_POLL_MIN_INTERVAL_MS 30000  // Throttle: min 30s entre 2 CMD_READ_LIGHT
+#define LIGHT_THRESHOLD 500  // < 500 = sombre (LED ON). Si capteur inversé (haut=sombre): utiliser >= pour ON
+#define LIGHT_SENSOR_INVERTED 0  // 0 = ADC >= 500 = clair (LED OFF). ADC < 500 = sombre (LED ON)
 
 #endif // CONFIG_H

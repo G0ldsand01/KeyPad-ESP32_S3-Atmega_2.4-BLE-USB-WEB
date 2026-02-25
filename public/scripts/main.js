@@ -66,6 +66,8 @@ let statusUpdateInterval = null;
 let bleWritePromise = Promise.resolve(); // File d'attente pour éviter "GATT operation already in progress"
 let backlightDebounceTimer = null;
 let statusUpdatesPausedUntil = 0;
+let lastBleWriteTime = 0;
+const BLE_MIN_WRITE_INTERVAL_MS = 800; // Éviter "GATT operation already in progress" / NotSupportedError
 
 function pauseStatusUpdatesUntil(timestamp) {
     statusUpdatesPausedUntil = Math.max(statusUpdatesPausedUntil, timestamp);
@@ -123,7 +125,6 @@ export function initApp() {
         initializeGrid();
         setupEventListeners();
         setupBacklightControls();
-        setupFingerprintControls();
         setupDisplayControls();
         setupSettingsControls();
         
@@ -704,9 +705,11 @@ async function connectToESP32() {
                     config.bluetoothCharacteristic = characteristic;
                     config.connectionType = 'bluetooth';
                     connected = true;
+                    lastBleWriteTime = Date.now(); // Attendre BLE_MIN_WRITE_INTERVAL_MS avant premier envoi (stabilisation BLE)
                     device.addEventListener('gattserverdisconnected', () => {
                         config.connected = false;
                         config.connectionType = null;
+                        config.lastLightLevel = undefined;
                         config.bluetoothDevice = null;
                         config.bluetoothServer = null;
                         config.bluetoothCharacteristic = null;
@@ -813,8 +816,19 @@ async function connectToESP32() {
             startSerialReader();
         }
         
+        // BLE: attendre que la connexion GATT soit stable avant d'envoyer (évite NotSupportedError)
+        if (connectionTypeValue === 'bluetooth') {
+            await new Promise(r => setTimeout(r, 800));
+        }
+        
         // Envoyer la config des touches + platform + layout en un seul message
         await sendConfigToESP32();
+        
+        // Envoyer aussi la config backlight (env_brightness, etc.) pour que la LED suive la luminosité
+        await sendBacklightConfig();
+        
+        // BLE: ne pas envoyer get_light — l'ESP32 pousse déjà la luminosité toutes les 5 s
+        // (get_light provoquait des déconnexions GATT sur Android)
     }
 }
 
@@ -884,6 +898,7 @@ async function disconnectFromESP32() {
     
     config.connected = false;
     config.connectionType = null;
+    config.lastLightLevel = undefined;
     bleWritePromise = Promise.resolve(); // Réinitialiser la file BLE
     if (statusUpdateInterval) {
         clearInterval(statusUpdateInterval);
@@ -938,6 +953,7 @@ async function startSerialReader() {
                 for (const line of lines) {
                     if (line.trim().length > 0) {
                         console.log('[DEBUG] [WEB_UI] Raw data received:', line);
+                        appendToSerialMonitor(line);
                         
                         // Parser les messages JSON si nécessaire
                         try {
@@ -952,7 +968,7 @@ async function startSerialReader() {
             } catch (error) {
                 console.error('Erreur lecture série:', error);
                 if (error.name === 'NetworkError' || error.name === 'InvalidStateError') {
-                    console.error('Port série déconnecté');
+                    console.error('Port série déconnecté (device lost - vérifier câble USB, alimentation)');
                     await disconnectFromESP32();
                 }
                 break;
@@ -997,7 +1013,9 @@ async function sendConfigToESP32() {
 
 // Gérer les messages de l'ESP32
 function handleESP32Message(data) {
-    console.log('[DEBUG] [WEB_UI] Received from ESP32:', data);
+    if (data.type !== 'light' && data.type !== 'uart_log') {
+        console.log('[DEBUG] [WEB_UI] Received from ESP32:', data);
+    }
     
     switch (data.type) {
         case 'keypress':
@@ -1018,15 +1036,28 @@ function handleESP32Message(data) {
             handleOTAMessage(data);
             break;
         case 'light':
-            console.log(`[DEBUG] [WEB_UI] Light level update: ${data.level}`);
-            // Mettre à jour l'affichage de la luminosité ambiante
-            if (data.level !== undefined) {
+            if (data.level !== undefined && (config.lastLightLevel === undefined || config.lastLightLevel !== data.level)) {
+                config.lastLightLevel = data.level;
+                console.log(`[DEBUG] [WEB_UI] Light level update: ${data.level}`);
                 updateLightLevel(data.level);
             }
             break;
-        case 'fingerprint':
-            handleFingerprintMessage(data);
+        case 'uart_log': {
+            const msg = data.msg || '';
+            const prefix = data.dir === 'tx' ? '[TX] ' : '[RX] ';
+            appendToSerialMonitor(prefix + msg);
+            console.log(`[UART] ${data.dir === 'tx' ? 'ESP32→ATmega' : 'ATmega→ESP32'}: ${msg}`);
+            // Extraire la luminosité des messages debug "[LIGHT] Level: NNN" (fallback si ESP32 n'a pas parsé)
+            const lightMatch = msg.match(/\[LIGHT\]\s*Level:\s*(\d+)/);
+            if (lightMatch && lightMatch[1]) {
+                const level = parseInt(lightMatch[1], 10);
+                if (level >= 0 && level <= 1023) {
+                    config.lastLightLevel = level;
+                    updateLightLevel(level);
+                }
+            }
             break;
+        }
         default:
             console.log('[DEBUG] [WEB_UI] Unknown message type:', data.type);
             break;
@@ -1036,18 +1067,29 @@ function handleESP32Message(data) {
 // Mettre à jour l'affichage de la luminosité ambiante
 function updateLightLevel(level) {
     const lightBar = document.getElementById('light-level-bar');
+    const lightRaw = document.getElementById('light-level-raw');
     const lightValue = document.getElementById('light-level-value');
-    
+    const lightLedStatus = document.getElementById('light-led-status');
+
     if (lightBar) {
-        // Convertir 0-1023 en pourcentage pour l'affichage
         const percent = Math.min(100, Math.round((level / 1023) * 100));
         lightBar.style.width = percent + '%';
     }
-    
+
+    if (lightRaw) {
+        lightRaw.textContent = Math.round(level);
+    }
+
     if (lightValue) {
-        // Convertir en lux approximatif (TEMT6000: ~0.625 lux par unité ADC à 5V)
         const lux = Math.round(level * 0.625);
-        lightValue.textContent = lux;
+        lightValue.textContent = lux + ' lux';
+    }
+
+    if (lightLedStatus) {
+        // ADC >= 500 = clair -> LED OFF. ADC < 500 = sombre -> LED ON
+        const ledOn = level < 500;
+        lightLedStatus.textContent = ledOn ? 'ON' : 'OFF';
+        lightLedStatus.className = 'light-stat-badge ' + (ledOn ? 'on' : 'off');
     }
 }
 
@@ -1604,12 +1646,34 @@ function setupDisplayCustomData() {
 
 // Configurer les contrôles de l'écran
 // Configurer les contrôles des paramètres
+// Moniteur série intégré (USB) — affiche la sortie Serial de l'ESP32
+function appendToSerialMonitor(text) {
+    const el = document.getElementById('serial-monitor-output');
+    if (!el) return;
+    const line = document.createElement('div');
+    line.textContent = text;
+    line.className = 'serial-monitor-line';
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+    const maxLines = 500;
+    while (el.children.length > maxLines) el.removeChild(el.firstChild);
+}
+
 function setupSettingsControls() {
     // Vérifier que les éléments existent (l'onglet Paramètres pourrait ne pas être chargé)
     const settingsPanel = document.getElementById('tab-settings');
     if (!settingsPanel) {
         // L'onglet Paramètres n'existe pas encore, on ne fait rien
         return;
+    }
+    
+    // Bouton Effacer du moniteur série
+    const serialClearBtn = document.getElementById('serial-clear-btn');
+    if (serialClearBtn) {
+        serialClearBtn.addEventListener('click', () => {
+            const el = document.getElementById('serial-monitor-output');
+            if (el) el.innerHTML = '';
+        });
     }
     
     // Charger les paramètres sauvegardés
@@ -2334,6 +2398,11 @@ async function sendDataToESP32(data) {
             if (!config.bluetoothCharacteristic || !config.bluetoothDevice?.gatt?.connected) {
                 return;
             }
+            // Throttle: attendre si une écriture BLE récente pour éviter "GATT operation already in progress"
+            const elapsed = Date.now() - lastBleWriteTime;
+            if (elapsed < BLE_MIN_WRITE_INTERVAL_MS) {
+                await new Promise(r => setTimeout(r, BLE_MIN_WRITE_INTERVAL_MS - elapsed));
+            }
             const dataStr = data + '\n';
             const char = config.bluetoothCharacteristic;
             bleWritePromise = bleWritePromise.then(async () => {
@@ -2346,12 +2415,24 @@ async function sendDataToESP32(data) {
                     } else {
                         for (let i = 0; i < encoded.length; i += BLE_CHUNK) {
                             await char.writeValue(encoded.slice(i, i + BLE_CHUNK));
-                            if (i + BLE_CHUNK < encoded.length) await new Promise(r => setTimeout(r, 15));
+                            if (i + BLE_CHUNK < encoded.length) await new Promise(r => setTimeout(r, 30));
                         }
                     }
+                    lastBleWriteTime = Date.now();
                     console.log('[DEBUG] [WEB_UI] Data sent via Bluetooth');
                 } catch (e) {
-                    if (config.connected) console.error('[DEBUG] [WEB_UI] BLE write error:', e);
+                    if (config.connected) {
+                        console.error('[DEBUG] [WEB_UI] BLE write error:', e);
+                        const msg = (e.message || '') + (e.name || '');
+                        const isDisconnected = msg.includes('disconnected') || msg.includes('GATT Server is disconnected');
+                        if (isDisconnected) {
+                            config.connected = false;
+                            if (statusUpdateInterval) clearInterval(statusUpdateInterval);
+                            statusUpdateInterval = null;
+                            updateConnectionStatus(false);
+                            console.log('[BLE] Connexion perdue (erreur GATT)');
+                        }
+                    }
                 }
             }).catch(() => { /* éviter rejet non géré */ });
             await bleWritePromise;
@@ -2360,6 +2441,13 @@ async function sendDataToESP32(data) {
         }
     } catch (error) {
         console.error('[DEBUG] [WEB_UI] Error sending data:', error);
+        if (config.connectionType === 'bluetooth' && (error.message?.includes('disconnected') || error.message?.includes('GATT Server is disconnected'))) {
+            config.connected = false;
+            if (statusUpdateInterval) clearInterval(statusUpdateInterval);
+            statusUpdateInterval = null;
+            updateConnectionStatus(false);
+            console.log('[BLE] Connexion perdue');
+        }
     }
 }
 
@@ -2398,8 +2486,11 @@ function startStatusUpdates() {
         if (!config.backlight.envBrightness) return;
         if (Date.now() < statusUpdatesPausedUntil) return;
         
+        // BLE: l'ESP32 pousse déjà la luminosité toutes les 2 s, pas besoin de poll get_light
+        if (config.connectionType === 'bluetooth') return;
+        
         await sendDataToESP32(JSON.stringify({ type: 'get_light' }));
-    }, 10000); // 10 s (BLE sensible aux requêtes trop fréquentes)
+    }, 10000); // 10 s pour USB uniquement
 }
 
 // --- Système de profils ---

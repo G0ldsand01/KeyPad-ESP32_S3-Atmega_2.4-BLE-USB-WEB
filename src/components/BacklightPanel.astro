@@ -1,34 +1,75 @@
 ---
 ---
 
-<div class="backlight-panel">
-  <h2>Rétro-éclairage</h2>
-  <div class="form-group">
-    <label>
-      <input type="checkbox" id="backlight-enabled" checked>
-      Activer le rétro-éclairage
-    </label>
+<div class="backlight-panel backlight-panel-full">
+  <h2 class="backlight-title">
+    <i data-lucide="sun" class="backlight-title-icon"></i>
+    Rétro-éclairage
+  </h2>
+
+  <div class="backlight-grid">
+    <!-- Section: Contrôles -->
+    <section class="backlight-section backlight-controls">
+      <h3>Contrôles</h3>
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="backlight-enabled" checked>
+          <span>Activer le rétro-éclairage</span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label for="backlight-brightness">Luminosité manuelle</label>
+        <div class="slider-row">
+          <input type="range" id="backlight-brightness" class="slider" min="0" max="100" value="50" step="1">
+          <span id="brightness-value" class="slider-value">50%</span>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="env-brightness">
+          <span>Selon l'environnement</span>
+        </label>
+        <p class="form-hint">Active la LED en faible luminosité (&lt;500), désactive en forte luminosité</p>
+      </div>
+    </section>
+
+    <!-- Section: Luminosité ambiante -->
+    <section class="backlight-section backlight-ambient">
+      <h3>Luminosité ambiante</h3>
+      <div class="light-display">
+        <div class="light-meter-wrapper">
+          <div class="light-meter-track">
+            <div id="light-level-bar" class="light-bar" style="width: 0%"></div>
+          </div>
+          <div class="light-meter-zones">
+            <span class="zone-dark">Sombre</span>
+            <span class="zone-mid">Modéré</span>
+            <span class="zone-bright">Clair</span>
+          </div>
+        </div>
+        <div class="light-stats">
+          <div class="light-stat">
+            <span class="light-stat-label">Valeur ADC</span>
+            <span id="light-level-raw" class="light-stat-value">0</span>
+            <span class="light-stat-unit">/ 1023</span>
+          </div>
+          <div class="light-stat">
+            <span class="light-stat-label">Lux (approx.)</span>
+            <span id="light-level-value" class="light-stat-value">0</span>
+          </div>
+          <div class="light-stat light-stat-status">
+            <span class="light-stat-label">LED</span>
+            <span id="light-led-status" class="light-stat-badge">—</span>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
-  <div class="form-group">
-    <label for="backlight-brightness">Luminosité manuelle:</label>
-    <input type="range" id="backlight-brightness" class="slider" min="0" max="100" value="50" step="1">
-    <span id="brightness-value">50%</span>
+
+  <div class="backlight-actions">
+    <button id="apply-backlight-btn" class="btn btn-primary">
+      <i data-lucide="check" class="btn-icon"></i>
+      <span>Appliquer</span>
+    </button>
   </div>
-  <div class="form-group">
-    <label>
-      <input type="checkbox" id="env-brightness">
-      Selon l'environnement (désactive LED si lumière élevée, active si faible)
-    </label>
-  </div>
-  <div class="form-group">
-    <label for="ambient-light">Luminosité ambiante:</label>
-    <div class="light-meter">
-      <div id="light-level-bar" class="light-bar"></div>
-      <span id="light-level-value">0</span> lux
-    </div>
-  </div>
-  <button id="apply-backlight-btn" class="btn btn-primary">
-    <i data-lucide="check" class="btn-icon"></i>
-    <span>Appliquer</span>
-  </button>
 </div>

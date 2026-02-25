@@ -5,6 +5,20 @@
   <h2>Paramètres système</h2>
   
   <div class="form-group">
+    <label>Moniteur série (USB)</label>
+    <div class="settings-section serial-monitor-section">
+      <p class="form-hint">Connectez-vous via USB pour voir la sortie Serial de l'ESP32. Fermez l'Arduino IDE / moniteur série avant de connecter.</p>
+      <div class="serial-monitor-toolbar">
+        <button id="serial-clear-btn" class="btn btn-secondary btn-sm" type="button">
+          <i data-lucide="trash-2" class="btn-icon"></i>
+          Effacer
+        </button>
+      </div>
+      <div id="serial-monitor-output" class="serial-monitor-output" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <div class="form-group">
     <label>Debug et Logging</label>
     <div class="settings-section">
       <div class="form-group">
