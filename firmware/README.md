@@ -1,17 +1,27 @@
-# Firmware Macropad
+# Firmware Macropad — Arduino & ESP32
 
-Ce dossier contient le code source pour les microcontrôleurs du macropad.
+Code source pour les microcontrôleurs du macropad : **ESP32-S3** (Arduino/C++) et **ATmega328P** (C++).
+
+> Voir le [README principal](../README.md) pour la vue d'ensemble du projet.
 
 ## 📁 Structure
 
 ```
 firmware/
 ├── esp32/
-│   └── esp32_macropad.ino    # Code principal ESP32-S3
+│   ├── esp32_micropython/           # Projet Arduino principal
+│   │   ├── esp32_micropython.ino     # Point d'entrée
+│   │   ├── Config.h                  # Pins, constantes, codes HID
+│   │   ├── KeyMatrix.h/cpp           # Scan matrice 5×4
+│   │   ├── Encoder.h/cpp             # Encodeur rotatif (volume)
+│   │   ├── HidOutput.h/cpp           # HID USB + BLE
+│   │   └── ARCHITECTURE.md           # Architecture du code
+│   └── USB_CONNECTION.md             # Notes connexion USB
 ├── atmega/
-│   ├── main.c                # Code principal ATmega328P/168A
-│   └── Makefile              # Makefile pour compilation
-└── README.md                 # Ce fichier
+│   └── atmega_light/                 # Projet Microchip Studio
+│       ├── main.cpp                   # Code principal
+│       └── atmega_light.cppproj       # Projet
+└── README.md
 ```
 
 ## 🚀 Guide de Démarrage Rapide
@@ -28,14 +38,12 @@ firmware/
    - Ouvrez Arduino IDE
    - Allez dans **Croquis > Inclure une bibliothèque > Gérer les bibliothèques**
    - Installez :
-     - **ArduinoJson** (version 6.x) - **ESSENTIEL**
-     - **Adafruit GFX Library**
-     - **Adafruit SSD1306**
-     - **Adafruit Fingerprint Sensor Library**
-     - **ESP32 BLE Keyboard** (optionnel, pour Bluetooth)
+   - **ArduinoJson** (version 6.x) - **ESSENTIEL**
+   - **Adafruit NeoPixel** - LED built-in
+   - Adafruit GFX, SSD1306, Fingerprint (si écran/empreinte utilisés)
 
 2. **Ouvrir le code** :
-   - Ouvrez `esp32/esp32_macropad.ino` dans Arduino IDE
+   - Ouvrez `esp32/esp32_micropython/esp32_micropython.ino` dans Arduino IDE
 
 3. **Configurer la carte** :
    - **Outils > Type de carte** : "ESP32S3 Dev Module"
@@ -44,7 +52,7 @@ firmware/
    - **Outils > USB Mode** : "Hardware CDC and JTAG"
    - **Outils > CPU Frequency** : "240MHz (WiFi/BT)"
    - **Outils > Flash Size** : "4MB (32Mb)"
-   - **Outils > Partition Scheme** : "Default 4MB with spiffs"
+   - **Outils > Partition Scheme** : "Default 4MB with spiffs" ou "Minimal SPIFFS (1.9MB APP with OTA)" pour OTA
 
 4. **Compiler et téléverser** :
    - Cliquez sur **Vérifier** (✓) pour compiler
@@ -65,22 +73,14 @@ firmware/
 #### Étapes
 
 1. **Ouvrir le projet** :
-   - Ouvrez Microchip Studio
-   - **File > New > Project**
-   - Sélectionnez "GCC C Executable Project"
-   - Choisissez "ATmega328P" ou "ATmega168A"
-   - Ajoutez le fichier `atmega/main.c` au projet
+   - Ouvrez `atmega/atmega_light/atmega_light.atsln` dans Microchip Studio
+   - Ou créez un projet et ajoutez `atmega/atmega_light/main.cpp`
 
-2. **Configurer le projet** :
-   - **Project > Properties**
-   - **Toolchain > AVR/GNU C Compiler > Symbols**
-   - Ajoutez : `F_CPU=16000000UL`
-
-3. **Compiler** :
+2. **Compiler** :
    - **Build > Build Solution** (F7)
    - Vérifiez qu'il n'y a pas d'erreurs
 
-4. **Programmer** :
+3. **Programmer** :
    - Connectez le PICKit 4 à l'ATmega
    - **Tools > Device Programming**
    - Sélectionnez "PICKit 4" et "ATmega328P"
@@ -88,7 +88,7 @@ firmware/
    - **Memories > Flash** : Sélectionnez le fichier `.hex` généré
    - Cliquez sur "Program"
 
-5. **Vérifier** :
+4. **Vérifier** :
    - L'ATmega devrait répondre sur I2C à l'adresse 0x08
    - Utilisez un scanner I2C pour vérifier
 
@@ -97,7 +97,7 @@ firmware/
 ### Fonctionnalités
 
 - Communication USB HID (clavier)
-- Communication Bluetooth (futur)
+- Communication Bluetooth (BLE)
 - Communication I2C avec ATmega328P
 - Gestion de l'écran OLED
 - Gestion du capteur d'empreinte digitale
@@ -107,8 +107,8 @@ firmware/
 
 ### Installation
 
-1. Ouvrez `esp32_macropad.ino` dans Arduino IDE
-2. Installez les librairies nécessaires (voir `docs/README_ESP32.md`)
+1. Ouvrez `esp32/esp32_micropython/esp32_micropython.ino` dans Arduino IDE
+2. Installez les librairies : ArduinoJson 6.x, Adafruit NeoPixel (voir section Prérequis)
 3. Configurez la carte ESP32-S3
 4. Téléversez le code
 
@@ -239,9 +239,9 @@ L'interface web envoie un message JSON complet. L'ESP32 :
 
 ### Installation
 
-1. Ouvrez le projet dans Microchip Studio
-2. Compilez le code
-3. Programmez avec PICKit 4 (voir `docs/README_ATmega328P.md`)
+1. Ouvrez `atmega/atmega_light/atmega_light.atsln` dans Microchip Studio
+2. Compilez (F7)
+3. Programmez avec PICKit 4 (Tools > Device Programming)
 
 ### Communication I2C
 
@@ -343,7 +343,7 @@ Sur certains appareils Android, vous devez activer le mode USB OTG :
 
 Pour activer le support Bluetooth HID (nécessaire pour iOS/Android) :
 
-1. Ouvrez `esp32_macropad.ino`
+1. Ouvrez `esp32_micropython.ino`
 2. Trouvez la ligne :
    ```cpp
    // #define USE_BLE_KEYBOARD
@@ -407,6 +407,21 @@ Le contrôle du volume utilise des combinaisons de touches compatibles avec tous
 Sur iOS et Android, ces combinaisons fonctionnent via Bluetooth HID.
 
 ## 📝 Notes importantes
+
+### Mise à jour OTA (sans fil)
+
+L'interface web permet de flasher le firmware **sans fil** via BLE ou USB Serial. Le fichier `.bin` est envoyé par chunks, décodé (base64) et écrit dans la partition OTA de l'ESP32.
+
+**Prérequis :**
+- Schéma de partition avec OTA (ex: "Default 4MB with spiffs" ou "Minimal SPIFFS (1.9MB APP with OTA)")
+- Exporter le binaire : Arduino IDE > Croquis > Exporter le binaire compilé
+
+**Utilisation :**
+1. Connectez-vous via BLE ou USB
+2. Onglet Paramètres > Mise à jour OTA
+3. Sélectionnez le fichier `.bin` compilé
+4. Cliquez sur "Mettre à jour le firmware"
+5. Ne déconnectez pas pendant le transfert
 
 ### Pour ESP32-S3
 

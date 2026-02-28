@@ -1,142 +1,173 @@
 ---
 ---
 
-<div class="settings-panel">
-  <h2>Paramètres système</h2>
-  
-  <div class="form-group">
-    <label>Moniteur série (USB)</label>
-    <div class="settings-section serial-monitor-section">
-      <p class="form-hint">Connectez-vous via USB pour voir la sortie Serial de l'ESP32. Fermez l'Arduino IDE / moniteur série avant de connecter.</p>
-      <div class="serial-monitor-toolbar">
-        <button id="serial-clear-btn" class="btn btn-secondary btn-sm" type="button">
-          <i data-lucide="trash-2" class="btn-icon"></i>
-          Effacer
-        </button>
-      </div>
-      <div id="serial-monitor-output" class="serial-monitor-output" aria-live="polite"></div>
-    </div>
+<div class="settings-layout-full" id="settings-layout">
+  <!-- Toggle Logging web -->
+  <div class="settings-web-logging-toggle">
+    <label class="settings-label">
+      <input type="checkbox" id="web-logging-enabled" checked>
+      <span>Logging web</span>
+    </label>
+    <p class="form-hint">Affiche le moniteur série, debug et options de log.</p>
   </div>
 
-  <div class="form-group">
-    <label>Debug et Logging</label>
-    <div class="settings-section">
-      <div class="form-group">
-        <label class="settings-label">
-          <input type="checkbox" id="debug-esp32-enabled">
-          <span>Debug ESP32</span>
-        </label>
-        <small class="form-hint">Active les messages de debug sur l'ESP32 (Serial/USB)</small>
-      </div>
-      
-      <div class="form-group">
-        <label class="settings-label">
-          <input type="checkbox" id="logging-esp32-enabled">
-          <span>Logging ESP32</span>
-        </label>
-        <small class="form-hint">Active le logging détaillé des opérations ESP32</small>
-      </div>
-      
-      <div class="form-group">
-        <label class="settings-label">
-          <input type="checkbox" id="logging-atmega-enabled">
-          <span>Logging ATmega328P</span>
-        </label>
-        <small class="form-hint">Active le logging UART sur l'ATmega328P (nécessite connexion UART)</small>
-      </div>
+  <!-- Ligne 1: Serial (gauche) | 4 blocs (droite) - quand logging ON -->
+  <div class="settings-panel serial-panel settings-logging-dependent">
+    <h2><i data-lucide="terminal" class="section-icon"></i> Moniteur série (USB)</h2>
+    <p class="form-hint">Connectez-vous via USB pour voir la sortie Serial de l'ESP32.</p>
+    <div class="serial-monitor-toolbar">
+      <label class="serial-option">
+        <input type="checkbox" id="serial-auto-scroll" checked>
+        <span>Défilement auto</span>
+      </label>
+      <label class="serial-option">
+        <span>Max lignes:</span>
+        <select id="serial-max-lines" class="form-control form-control-sm">
+          <option value="100">100</option>
+          <option value="250">250</option>
+          <option value="500" selected>500</option>
+          <option value="1000">1000</option>
+        </select>
+      </label>
+      <button id="serial-clear-btn" class="btn btn-secondary btn-sm" type="button">
+        <i data-lucide="trash-2" class="btn-icon"></i>
+        Effacer
+      </button>
     </div>
+    <div id="serial-monitor-output" class="serial-monitor-output" aria-live="polite"></div>
   </div>
 
-  <div class="form-group">
-    <label>Niveaux de logging</label>
-    <div class="settings-section">
+  <div class="settings-top-right-grid">
+    <section class="settings-section-card settings-connexion-card">
+      <h3><i data-lucide="smartphone" class="section-icon"></i> Appareil</h3>
       <div class="form-group">
-        <label for="esp32-log-level">Niveau de log ESP32:</label>
+        <label for="ble-device-name">Nom BLE:</label>
+        <input type="text" id="ble-device-name" class="form-control" placeholder="Macropad Keyboard" maxlength="24">
+        <p class="form-hint" style="margin-top: 4px; font-size: 0.8rem;">HID (touches): appairez l'appareil dans les paramètres Bluetooth du système (Windows/Mac).</p>
+      </div>
+      <div class="form-group">
+        <label for="default-connection-type">Connexion par défaut:</label>
+        <select id="default-connection-type" class="form-control">
+          <option value="bluetooth">Bluetooth (ESP32)</option>
+          <option value="usb">Wired (USB)</option>
+          <option value="wifi">WiFi (Dongle)</option>
+        </select>
+      </div>
+      <div class="checkbox-group-vertical">
+        <label class="settings-label">
+          <input type="checkbox" id="auto-reconnect-enabled">
+          <span>Auto-reconnexion</span>
+        </label>
+        <label class="settings-label">
+          <input type="checkbox" id="check-updates-on-startup">
+          <span>Vérifier les mises à jour au démarrage</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="settings-section-card settings-debug-card">
+      <h3><i data-lucide="bug" class="section-icon"></i> Debug & Logging</h3>
+      <div class="checkbox-group-vertical">
+        <label class="settings-label"><input type="checkbox" id="debug-esp32-enabled"><span>Debug ESP32</span></label>
+        <label class="settings-label"><input type="checkbox" id="logging-esp32-enabled"><span>Logging ESP32</span></label>
+        <label class="settings-label"><input type="checkbox" id="logging-atmega-enabled"><span>Logging ATmega328P</span></label>
+      </div>
+    </section>
+
+    <section class="settings-section-card settings-log-levels-card">
+      <h3><i data-lucide="list-filter" class="section-icon"></i> Niveaux de log</h3>
+      <div class="form-group">
+        <label for="esp32-log-level">ESP32:</label>
         <select id="esp32-log-level" class="form-control">
           <option value="none">Aucun</option>
-          <option value="error">Erreurs uniquement</option>
+          <option value="error">Erreurs</option>
           <option value="warn">Avertissements</option>
           <option value="info" selected>Information</option>
-          <option value="debug">Debug complet</option>
-          <option value="verbose">Verbose (tout)</option>
+          <option value="debug">Debug</option>
+          <option value="verbose">Verbose</option>
         </select>
       </div>
-      
       <div class="form-group">
-        <label for="atmega-log-level">Niveau de log ATmega:</label>
+        <label for="atmega-log-level">ATmega:</label>
         <select id="atmega-log-level" class="form-control">
           <option value="none">Aucun</option>
-          <option value="error">Erreurs uniquement</option>
+          <option value="error">Erreurs</option>
           <option value="info" selected>Information</option>
-          <option value="debug">Debug complet</option>
+          <option value="debug">Debug</option>
         </select>
       </div>
-    </div>
+    </section>
+
+    <section class="settings-section-card settings-debug-options-card">
+      <h3><i data-lucide="settings-2" class="section-icon"></i> Options de debug</h3>
+      <div class="checkbox-group-vertical">
+        <label><input type="checkbox" id="debug-hid-enabled"> HID</label>
+        <label><input type="checkbox" id="debug-i2c-enabled"> I2C</label>
+        <label><input type="checkbox" id="debug-web-enabled"> Web UI</label>
+        <label><input type="checkbox" id="debug-display-enabled"> Display</label>
+        <label><input type="checkbox" id="debug-config-enabled"> Config</label>
+      </div>
+    </section>
   </div>
 
-  <div class="form-group">
-    <label>Options de debug</label>
-    <div class="settings-section">
-      <div class="checkbox-group">
-        <label>
-          <input type="checkbox" id="debug-hid-enabled">
-          Debug HID (touches, clavier)
-        </label>
-        <label>
-          <input type="checkbox" id="debug-i2c-enabled">
-          Debug I2C (communication ATmega)
-        </label>
-        <label>
-          <input type="checkbox" id="debug-web-enabled">
-          Debug Web UI (messages Web)
-        </label>
-        <label>
-          <input type="checkbox" id="debug-display-enabled">
-          Debug Display (écran ST7789)
-        </label>
-        <label>
-          <input type="checkbox" id="debug-config-enabled">
-          Debug Config (configuration, profils)
-        </label>
-      </div>
-    </div>
-  </div>
-
-  <div class="form-group">
-    <label>Mise à jour OTA (Over-The-Air)</label>
-    <div class="settings-section">
+  <!-- Ligne 2: OTA (gauche) | Données (droite) - même taille -->
+  <div class="settings-panel ota-panel">
+    <h3><i data-lucide="upload" class="section-icon"></i> Mise à jour OTA</h3>
+    <p class="form-hint ota-hint">Flashez le firmware sans fil via BLE ou USB. Exportez le binaire depuis Arduino IDE (Croquis > Exporter le binaire compilé). Schéma de partition OTA requis.</p>
+    <div class="ota-actions">
       <div class="form-group">
-        <label for="ota-file-input">Fichier firmware (.py):</label>
-        <input type="file" id="ota-file-input" accept=".py" class="form-control">
-        <small class="form-hint">Sélectionnez le fichier main.py à téléverser</small>
+        <label for="ota-github-repo">Dépôt GitHub (owner/repo):</label>
+        <input type="text" id="ota-github-repo" class="form-control" placeholder="ex: user/macropad-firmware">
       </div>
-      
       <div class="form-group">
-        <button id="ota-update-btn" class="btn btn-primary">
-          <i data-lucide="upload" class="btn-icon"></i>
-          <span>Mettre à jour le firmware</span>
-        </button>
+        <label for="ota-file-input">Fichier firmware (.bin):</label>
+        <input type="file" id="ota-file-input" accept=".bin" class="form-control">
       </div>
-      
-      <div id="ota-progress" style="display: none;">
+      <button id="ota-update-btn" class="btn btn-primary btn-block" type="button">
+        <i data-lucide="upload" class="btn-icon"></i>
+        Mettre à jour le firmware
+      </button>
+      <div id="ota-progress" class="ota-progress-wrap" style="display: none;" role="status" aria-live="polite">
         <div class="progress-bar-container">
-          <div class="progress-bar" id="ota-progress-bar" style="width: 0%"></div>
+          <div class="progress-bar" id="ota-progress-bar" style="width: 0%" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
         </div>
-        <small id="ota-progress-text">0%</small>
+        <span id="ota-progress-text" class="ota-progress-text">0%</span>
       </div>
+      <button id="ota-check-updates-btn" class="btn btn-secondary btn-block ota-cta-btn" type="button">
+        <i data-lucide="refresh-cw" class="btn-icon"></i>
+        Vérifier les mises à jour
+      </button>
+      <div id="ota-check-feedback" class="ota-check-feedback" style="display: none;"></div>
     </div>
   </div>
 
-  <div class="button-group">
+  <section class="settings-section-card settings-section-data">
+    <h3><i data-lucide="database" class="section-icon"></i> Données</h3>
+    <div class="settings-actions">
+      <div class="settings-actions-import-export">
+        <button id="export-config-btn" class="btn btn-secondary btn-block">
+          <i data-lucide="download" class="btn-icon"></i>
+          Exporter la configuration
+        </button>
+        <button id="import-config-btn" class="btn btn-secondary btn-block">
+          <i data-lucide="upload" class="btn-icon"></i>
+          Importer la configuration
+        </button>
+        <input type="file" id="import-config-input" accept=".json" style="display: none;">
+      </div>
+      <button id="reset-settings-btn" class="btn btn-outline btn-block">
+        <i data-lucide="refresh-cw" class="btn-icon"></i>
+        Réinitialiser les paramètres
+      </button>
+    </div>
+  </section>
+
+  <!-- Ligne 3: Appliquer (pleine largeur) -->
+  <div class="settings-actions-bar settings-actions-bar-full">
     <button id="apply-settings-btn" class="btn btn-primary">
       <i data-lucide="save" class="btn-icon"></i>
-      <span>Appliquer les paramètres</span>
+      Appliquer les paramètres
     </button>
-    <button id="reset-settings-btn" class="btn btn-secondary">
-      <i data-lucide="refresh-cw" class="btn-icon"></i>
-      <span>Réinitialiser</span>
-    </button>
+    <div id="settings-feedback" class="feedback-message"></div>
   </div>
-
-  <div id="settings-feedback" class="feedback-message"></div>
 </div>

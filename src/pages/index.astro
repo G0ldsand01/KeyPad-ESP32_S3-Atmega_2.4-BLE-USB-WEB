@@ -5,7 +5,6 @@ import ConfigPanel from '../components/ConfigPanel.astro';
 import StatusBar from '../components/StatusBar.astro';
 import TabNavigation from '../components/TabNavigation.astro';
 import BacklightPanel from '../components/BacklightPanel.astro';
-import DisplayPanel from '../components/DisplayPanel.astro';
 import SettingsPanel from '../components/SettingsPanel.astro';
 ---
 
@@ -45,22 +44,9 @@ import SettingsPanel from '../components/SettingsPanel.astro';
         </div>
       </div>
 
-      <!-- Onglet Écran -->
-      <div class="tab-panel" id="tab-display">
-        <div class="display-layout">
-          <div class="display-config-section">
-            <DisplayPanel />
-          </div>
-        </div>
-      </div>
-
       <!-- Onglet Paramètres -->
       <div class="tab-panel" id="tab-settings">
-        <div class="settings-layout">
-          <div class="settings-column">
-            <SettingsPanel />
-          </div>
-        </div>
+        <SettingsPanel />
       </div>
     </div>
   </div>

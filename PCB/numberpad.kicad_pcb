@@ -1321,7 +1321,7 @@
 			)
 		)
 		(property "Value" "USB_C_TO_PC"
-			(at 0 4.61 0)
+			(at 2.4 1.28 90)
 			(layer "F.Fab")
 			(uuid "a8300b30-cf8a-45ae-b6b4-eae01462f7c1")
 			(effects
@@ -11302,7 +11302,7 @@
 	(footprint "footprints:XTAL_HC49P488W43L1150T466H350"
 		(layer "F.Cu")
 		(uuid "d17a74f3-21c7-4945-ac65-8e11a46c4c05")
-		(at 66.35 53.21)
+		(at 66.35 53.22)
 		(property "Reference" "Y1"
 			(at -0.575545 -3.888755 0)
 			(layer "F.SilkS")
@@ -11537,7 +11537,7 @@
 			(uuid "4978ac10-8fea-470b-b61d-d95faccb8852")
 		)
 		(fp_text user "${REFERENCE}"
-			(at 2.5 0 0)
+			(at 1.72 -3.86 0)
 			(layer "F.Fab")
 			(uuid "1e053130-d832-4fc1-8b73-e1ed92a0fbcf")
 			(effects
@@ -25526,7 +25526,7 @@
 			)
 		)
 		(property "Value" "ESP32-S3-DEVKITC-1-N16R8V"
-			(at -2.73 3.97 0)
+			(at 9.65 4.38 0)
 			(layer "B.Fab")
 			(uuid "a9e7cc5a-518f-4961-8bac-3fcacc9d589b")
 			(effects

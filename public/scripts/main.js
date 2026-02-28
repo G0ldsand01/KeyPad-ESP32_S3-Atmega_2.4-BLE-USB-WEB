@@ -17,6 +17,15 @@ let config = {
         maxFingerprints: 10
     },
     settings: {
+        bleDeviceName: '',
+        autoReconnectEnabled: true,
+        defaultConnectionType: 'bluetooth',
+        checkUpdatesOnStartup: false,
+        githubFirmwareRepo: '',
+        webLoggingEnabled: true,
+        theme: 'dark',
+        serialAutoScroll: true,
+        serialMaxLines: 500,
         debug: {
             esp32Enabled: false,
             esp32LogLevel: 'info',
@@ -119,6 +128,8 @@ export function initApp() {
         setupTabs();
         setupTheme();
         loadConfig();
+        const connEl = document.getElementById('connection-type');
+        if (connEl && config.settings?.defaultConnectionType) connEl.value = config.settings.defaultConnectionType;
         migrateConfigToProfiles();
         ensureProfiles();
         setupProfiles();
@@ -166,6 +177,8 @@ function setupTheme() {
         
         document.documentElement.setAttribute('data-theme', newTheme);
         localStorage.setItem('theme', newTheme);
+        if (config.settings) config.settings.theme = newTheme;
+        saveConfig();
         
         // Mettre à jour l'icône
         updateThemeIcon(newTheme, themeIcon);
@@ -669,16 +682,34 @@ async function connectToESP32() {
     
     switch(connectionTypeValue) {
         case 'bluetooth':
-            // Connexion Bluetooth via ESP32 (BluetoothSerial)
+            // Connexion Bluetooth via ESP32 (service série 0xFFE0)
             try {
                 if ('bluetooth' in navigator) {
-                    const device = await navigator.bluetooth.requestDevice({
-                        filters: [{ namePrefix: 'Macropad' }],
-                        optionalServices: [
-                            '0000ffe0-0000-1000-8000-00805f9b34fb', // Service série Bluetooth standard
-                            '00001101-0000-1000-8000-00805f9b34fb'  // SPP (Serial Port Profile)
-                        ]
-                    });
+                    const serialUuid = '0000ffe0-0000-1000-8000-00805f9b34fb';
+                    const namePrefix = (config.settings?.bleDeviceName || config.bleDeviceName || 'Macropad').trim() || 'Macropad';
+                    let device;
+                    try {
+                        device = await navigator.bluetooth.requestDevice({
+                            filters: [{ namePrefix }],
+                            optionalServices: [serialUuid]
+                        });
+                    } catch (filterErr) {
+                        if (filterErr.name === 'NotFoundError') {
+                            try {
+                                device = await navigator.bluetooth.requestDevice({
+                                    filters: [{ namePrefix: 'Macropad' }],
+                                    optionalServices: [serialUuid]
+                                });
+                            } catch (fallbackErr) {
+                                device = await navigator.bluetooth.requestDevice({
+                                    acceptAllDevices: true,
+                                    optionalServices: [serialUuid]
+                                });
+                            }
+                        } else {
+                            throw filterErr;
+                        }
+                    }
                     
                     const server = await device.gatt.connect();
                     config.bluetoothDevice = device;
@@ -718,6 +749,16 @@ async function connectToESP32() {
                         statusUpdateInterval = null;
                         updateConnectionStatus(false);
                         console.log('[BLE] Déconnecté par le périphérique');
+                        if (config.settings?.autoReconnectEnabled !== false && reconnectAttempts < maxReconnectAttempts) {
+                            reconnectAttempts++;
+                            setTimeout(() => {
+                                const btn = document.getElementById('connect-btn');
+                                const sel = document.getElementById('connection-type');
+                                if (btn && sel && sel.value === 'bluetooth') btn.click();
+                            }, 2000);
+                        } else {
+                            reconnectAttempts = 0;
+                        }
                     });
                 } else {
                     alert('Bluetooth n\'est pas supporté sur ce navigateur. Utilisez Chrome ou Edge.');
@@ -728,10 +769,12 @@ async function connectToESP32() {
                 if (error.name === 'NotFoundError') {
                     const msg = error.message?.includes('cancelled') || error.message?.includes('User cancelled')
                         ? 'Connexion annulée.'
-                        : 'Aucun appareil Bluetooth trouvé. Assurez-vous que le Macropad est allumé et en mode Bluetooth.';
+                        : 'Aucun appareil Bluetooth trouvé.\n\nVérifications:\n• Macropad allumé et en mode Bluetooth\n• Nom BLE dans Paramètres = "Macropad" ou "Macropad Keyboard"\n• Bluetooth activé sur l\'ordinateur\n• Utilisez Chrome ou Edge (HTTPS ou localhost)';
                     alert(msg);
+                } else if (error.name === 'SecurityError') {
+                    alert('Bluetooth nécessite HTTPS ou localhost. Vérifiez l\'URL.');
                 } else {
-                    alert('Erreur lors de la connexion Bluetooth: ' + error.message);
+                    alert('Erreur Bluetooth: ' + (error.message || error.name));
                 }
                 return;
             }
@@ -790,6 +833,7 @@ async function connectToESP32() {
     
     if (connected) {
         config.connected = true;
+        reconnectAttempts = 0;
         pauseStatusUpdatesUntil(Date.now() + 10000); // Bloquer get_light pendant les envois initiaux
         updateConnectionStatus(true, connectionTypeValue);
         
@@ -1164,6 +1208,15 @@ function loadConfig() {
     
     if (savedConfig.settings) {
         config.settings = {
+            bleDeviceName: savedConfig.settings.bleDeviceName ?? config.settings?.bleDeviceName ?? '',
+            autoReconnectEnabled: savedConfig.settings.autoReconnectEnabled ?? config.settings?.autoReconnectEnabled ?? true,
+            defaultConnectionType: savedConfig.settings.defaultConnectionType ?? config.settings?.defaultConnectionType ?? 'bluetooth',
+            checkUpdatesOnStartup: savedConfig.settings.checkUpdatesOnStartup ?? config.settings?.checkUpdatesOnStartup ?? false,
+            githubFirmwareRepo: savedConfig.settings.githubFirmwareRepo ?? config.settings?.githubFirmwareRepo ?? '',
+            webLoggingEnabled: savedConfig.settings.webLoggingEnabled ?? config.settings?.webLoggingEnabled ?? true,
+            theme: savedConfig.settings.theme ?? config.settings?.theme ?? 'dark',
+            serialAutoScroll: savedConfig.settings.serialAutoScroll ?? true,
+            serialMaxLines: savedConfig.settings.serialMaxLines ?? 500,
             debug: {
                 esp32Enabled: savedConfig.settings.debug?.esp32Enabled || false,
                 esp32LogLevel: savedConfig.settings.debug?.esp32LogLevel || 'info',
@@ -1180,7 +1233,12 @@ function loadConfig() {
                 atmegaEnabled: savedConfig.settings.logging?.atmegaEnabled || false
             }
         };
+        if (config.settings.theme && config.settings.theme !== 'auto') {
+            document.documentElement.setAttribute('data-theme', config.settings.theme);
+            localStorage.setItem('theme', config.settings.theme);
+        }
     }
+    if (savedConfig && savedConfig.bleDeviceName && config.settings) config.settings.bleDeviceName = savedConfig.bleDeviceName;
 }
 
 // Configurer les contrôles de rétro-éclairage
@@ -1654,9 +1712,9 @@ function appendToSerialMonitor(text) {
     line.textContent = text;
     line.className = 'serial-monitor-line';
     el.appendChild(line);
-    el.scrollTop = el.scrollHeight;
-    const maxLines = 500;
+    const maxLines = config.settings?.serialMaxLines ?? 500;
     while (el.children.length > maxLines) el.removeChild(el.firstChild);
+    if (config.settings?.serialAutoScroll !== false) el.scrollTop = el.scrollHeight;
 }
 
 function setupSettingsControls() {
@@ -1667,12 +1725,138 @@ function setupSettingsControls() {
         return;
     }
     
+    // Toggle Logging web
+    const webLoggingToggle = document.getElementById('web-logging-enabled');
+    const settingsLayout = document.getElementById('settings-layout');
+    if (webLoggingToggle && settingsLayout) {
+        webLoggingToggle.checked = config.settings?.webLoggingEnabled !== false;
+        settingsLayout.classList.toggle('web-logging-off', !webLoggingToggle.checked);
+        webLoggingToggle.addEventListener('change', (e) => {
+            if (!config.settings) config.settings = {};
+            config.settings.webLoggingEnabled = e.target.checked;
+            settingsLayout.classList.toggle('web-logging-off', !e.target.checked);
+            saveConfig();
+        });
+    }
+
     // Bouton Effacer du moniteur série
     const serialClearBtn = document.getElementById('serial-clear-btn');
     if (serialClearBtn) {
         serialClearBtn.addEventListener('click', () => {
             const el = document.getElementById('serial-monitor-output');
             if (el) el.innerHTML = '';
+        });
+    }
+    
+    // Nom BLE
+    const bleName = document.getElementById('ble-device-name');
+    if (bleName) {
+        bleName.value = config.settings?.bleDeviceName || config.bleDeviceName || '';
+        bleName.addEventListener('change', () => {
+            if (!config.settings) config.settings = {};
+            config.settings.bleDeviceName = bleName.value.trim();
+            saveConfig();
+        });
+    }
+
+    // Auto-reconnexion
+    const autoReconnect = document.getElementById('auto-reconnect-enabled');
+    if (autoReconnect) {
+        autoReconnect.checked = config.settings?.autoReconnectEnabled !== false;
+        autoReconnect.addEventListener('change', (e) => {
+            if (!config.settings) config.settings = {};
+            config.settings.autoReconnectEnabled = e.target.checked;
+            saveConfig();
+        });
+    }
+
+    // Connexion par défaut
+    const defaultConnType = document.getElementById('default-connection-type');
+    if (defaultConnType) {
+        defaultConnType.value = config.settings?.defaultConnectionType || 'bluetooth';
+        defaultConnType.addEventListener('change', (e) => {
+            if (!config.settings) config.settings = {};
+            config.settings.defaultConnectionType = e.target.value;
+            const statusConnType = document.getElementById('connection-type');
+            if (statusConnType) statusConnType.value = e.target.value;
+            saveConfig();
+        });
+    }
+
+    // Vérifier les mises à jour au démarrage
+    const checkUpdatesStartup = document.getElementById('check-updates-on-startup');
+    if (checkUpdatesStartup) {
+        checkUpdatesStartup.checked = config.settings?.checkUpdatesOnStartup || false;
+        checkUpdatesStartup.addEventListener('change', (e) => {
+            if (!config.settings) config.settings = {};
+            config.settings.checkUpdatesOnStartup = e.target.checked;
+            saveConfig();
+        });
+    }
+    
+    // Serial auto-scroll et max lignes
+    const serialAutoScroll = document.getElementById('serial-auto-scroll');
+    if (serialAutoScroll) {
+        serialAutoScroll.checked = config.settings?.serialAutoScroll !== false;
+        serialAutoScroll.addEventListener('change', (e) => {
+            if (!config.settings) config.settings = {};
+            config.settings.serialAutoScroll = e.target.checked;
+            saveConfig();
+        });
+    }
+    const serialMaxLines = document.getElementById('serial-max-lines');
+    if (serialMaxLines) {
+        serialMaxLines.value = String(config.settings?.serialMaxLines ?? 500);
+        serialMaxLines.addEventListener('change', (e) => {
+            if (!config.settings) config.settings = {};
+            config.settings.serialMaxLines = parseInt(e.target.value, 10) || 500;
+            saveConfig();
+        });
+    }
+    
+    // Export config
+    const exportBtn = document.getElementById('export-config-btn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', () => {
+            const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'macropad-config-' + new Date().toISOString().slice(0, 10) + '.json';
+            a.click();
+            URL.revokeObjectURL(a.href);
+        });
+    }
+    
+    // Import config
+    const importBtn = document.getElementById('import-config-btn');
+    const importInput = document.getElementById('import-config-input');
+    if (importBtn && importInput) {
+        importBtn.addEventListener('click', () => importInput.click());
+        importInput.addEventListener('change', (e) => {
+            const f = e.target.files[0];
+            if (!f) return;
+            const r = new FileReader();
+            r.onload = () => {
+                try {
+                    const imported = JSON.parse(r.result);
+                    if (imported.profiles || imported.rows) {
+                        config = { ...config, ...imported };
+                        config.connected = false;
+                        config.connectionType = null;
+                        config.serialPort = null;
+                        config.bluetoothDevice = null;
+                        config.bluetoothServer = null;
+                        config.bluetoothCharacteristic = null;
+                        saveConfig();
+                        loadConfig();
+                        if (confirm('Configuration importée. Recharger la page pour appliquer ?')) location.reload();
+                    } else alert('Fichier de configuration invalide');
+                } catch (err) {
+                    alert('Erreur: ' + (err.message || 'fichier invalide'));
+                }
+            };
+            r.readAsText(f);
+            e.target.value = '';
         });
     }
     
@@ -1830,22 +2014,98 @@ function setupSettingsControls() {
         otaUpdateBtn.addEventListener('click', async () => {
             const file = otaFileInput.files[0];
             if (!file) {
-                alert('Veuillez sélectionner un fichier .py');
+                alert('Veuillez sélectionner un fichier .bin');
                 return;
             }
             
-            if (!file.name.endsWith('.py')) {
-                alert('Le fichier doit être un fichier .py');
+            if (!file.name.endsWith('.bin')) {
+                alert('Le fichier doit être un fichier .bin compilé (Arduino IDE: Croquis > Exporter le binaire compilé)');
                 return;
             }
             
-            if (!confirm(`Mettre à jour le firmware avec ${file.name} ?\n\nL\'ESP32 va redémarrer après la mise à jour.`)) {
+            if (!confirm(`Mettre à jour le firmware avec ${file.name} ?\n\nL'ESP32 va redémarrer après la mise à jour. Ne déconnectez pas pendant le transfert.`)) {
                 return;
             }
             
             await performOTAUpdate(file);
         });
     }
+    
+    // CTA OTA: Vérifier les mises à jour via GitHub
+    const otaCheckUpdatesBtn = document.getElementById('ota-check-updates-btn');
+    const otaGithubRepo = document.getElementById('ota-github-repo');
+    if (otaCheckUpdatesBtn) {
+        otaCheckUpdatesBtn.addEventListener('click', async () => {
+            const repo = (otaGithubRepo?.value || config.settings?.githubFirmwareRepo || '').trim();
+            const feedbackEl = document.getElementById('ota-check-feedback');
+            if (!feedbackEl) return;
+            feedbackEl.style.display = 'block';
+            feedbackEl.className = 'ota-check-feedback';
+            feedbackEl.innerHTML = '<span class="ota-check-loading">Vérification des mises à jour…</span>';
+            if (!repo) {
+                feedbackEl.className = 'ota-check-feedback ota-check-error';
+                feedbackEl.innerHTML = 'Indiquez un dépôt GitHub (ex: owner/repo) pour vérifier les mises à jour.';
+                return;
+            }
+            try {
+                const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+                    headers: { Accept: 'application/vnd.github.v3+json' }
+                });
+                if (!res.ok) {
+                    if (res.status === 404) throw new Error('Dépôt ou release introuvable.');
+                    throw new Error(`Erreur API: ${res.status}`);
+                }
+                const data = await res.json();
+                const tag = (data.tag_name || '').replace(/^v/, '');
+                const current = '1.0.0';
+                const binAsset = (data.assets || []).find(a => (a.name || '').toLowerCase().endsWith('.bin'));
+                const downloadUrl = binAsset?.browser_download_url || data.html_url;
+                const isNewer = compareVersions(tag, current) > 0;
+                if (isNewer) {
+                    feedbackEl.className = 'ota-check-feedback ota-check-success';
+                    feedbackEl.innerHTML = `
+                        <strong>Mise à jour disponible : ${data.tag_name || tag}</strong>
+                        <p class="ota-check-desc">${(data.body || '').slice(0, 200)}${(data.body || '').length > 200 ? '…' : ''}</p>
+                        <a href="${downloadUrl}" target="_blank" rel="noopener" class="ota-check-link">Télécharger le firmware</a>
+                    `;
+                } else {
+                    feedbackEl.className = 'ota-check-feedback ota-check-info';
+                    feedbackEl.innerHTML = `Vous êtes à jour (${current}). Dernière release : ${data.tag_name || tag}`;
+                }
+            } catch (err) {
+                feedbackEl.className = 'ota-check-feedback ota-check-error';
+                feedbackEl.innerHTML = 'Erreur : ' + (err.message || 'impossible de vérifier');
+            }
+        });
+    }
+    if (otaGithubRepo) {
+        otaGithubRepo.value = config.settings?.githubFirmwareRepo || '';
+        otaGithubRepo.addEventListener('change', () => {
+            if (!config.settings) config.settings = {};
+            config.settings.githubFirmwareRepo = otaGithubRepo.value.trim();
+            saveConfig();
+        });
+    }
+}
+
+function compareVersions(a, b) {
+    const pa = (a || '0').split('.').map(n => parseInt(n, 10) || 0);
+    const pb = (b || '0').split('.').map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const va = pa[i] || 0, vb = pb[i] || 0;
+        if (va !== vb) return va > vb ? 1 : -1;
+    }
+    return 0;
+}
+
+// Convertir ArrayBuffer/Uint8Array en base64 (pour binaire)
+function arrayBufferToBase64(bufferOrView) {
+    const bytes = bufferOrView instanceof Uint8Array ? bufferOrView : new Uint8Array(bufferOrView);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
 }
 
 // Fonction pour effectuer une mise à jour OTA
@@ -1856,24 +2116,24 @@ async function performOTAUpdate(file) {
     const otaUpdateBtn = document.getElementById('ota-update-btn');
     
     try {
-        // Lire le fichier
-        const fileContent = await file.text();
-        const fileSize = fileContent.length;
+        const arrayBuffer = await file.arrayBuffer();
+        const fileSize = arrayBuffer.byteLength;
         
-        // Calculer le nombre de chunks (max 512 bytes par chunk pour BLE GATT)
-        // Base64 augmente la taille de ~33%, et le JSON wrapper prend ~50-80 bytes
-        // Donc: (512 - 80) / 1.33 ≈ 325 bytes max pour les données originales
-        // On utilise 200 caractères pour être sûr de rester sous 512 bytes
-        const chunkSize = 200; // Taille de chunk en caractères (après base64 + JSON < 512 bytes)
-        const totalChunks = Math.ceil(fileContent.length / chunkSize);
+        const rawChunkSize = 256;
+        const totalChunks = Math.ceil(fileSize / rawChunkSize);
         
-        // Afficher la progression
         otaProgress.style.display = 'block';
         otaProgressBar.style.width = '0%';
+        otaProgressBar.setAttribute('aria-valuenow', 0);
         otaProgressText.textContent = '0%';
         otaUpdateBtn.disabled = true;
+        const otaCheckBtn = document.getElementById('ota-check-updates-btn');
+        if (otaCheckBtn) otaCheckBtn.disabled = true;
+        const otaPanel = document.querySelector('.ota-panel');
+        const settingsLayout = document.getElementById('settings-layout');
+        if (otaPanel) otaPanel.classList.add('ota-updating');
+        if (settingsLayout) settingsLayout.classList.add('ota-updating');
         
-        // Envoyer le message de début
         const startMessage = {
             type: 'ota_start',
             filename: file.name,
@@ -1882,17 +2142,14 @@ async function performOTAUpdate(file) {
         };
         await sendDataToESP32(JSON.stringify(startMessage));
         
-        // Attendre un peu pour que l'ESP32 soit prêt
         await new Promise(resolve => setTimeout(resolve, 500));
         
-        // Envoyer les chunks
+        const bytes = new Uint8Array(arrayBuffer);
         for (let i = 0; i < totalChunks; i++) {
-            const start = i * chunkSize;
-            const end = Math.min(start + chunkSize, fileContent.length);
-            const chunk = fileContent.substring(start, end);
-            
-            // Encoder en base64 pour éviter les problèmes de caractères spéciaux
-            const chunkBase64 = btoa(unescape(encodeURIComponent(chunk)));
+            const start = i * rawChunkSize;
+            const end = Math.min(start + rawChunkSize, fileSize);
+            const chunk = bytes.subarray(start, end);
+            const chunkBase64 = arrayBufferToBase64(chunk);
             
             const chunkMessage = {
                 type: 'ota_chunk',
@@ -1901,53 +2158,49 @@ async function performOTAUpdate(file) {
                 encoded: true
             };
             
-            // Vérifier la taille du message avant envoi (limite BLE GATT = 512 bytes)
             const messageStr = JSON.stringify(chunkMessage);
             const messageSize = new TextEncoder().encode(messageStr).length;
             
             if (messageSize > 512) {
-                console.error(`[OTA] Chunk ${i} too large: ${messageSize} bytes (max 512)`);
-                throw new Error(`Chunk ${i} is too large (${messageSize} bytes). Reduce chunk size.`);
+                throw new Error(`Chunk ${i} trop grand (${messageSize} bytes).`);
             }
             
             await sendDataToESP32(messageStr);
             
-            // Mettre à jour la progression
             const progress = Math.round(((i + 1) / totalChunks) * 100);
             otaProgressBar.style.width = progress + '%';
+            otaProgressBar.setAttribute('aria-valuenow', progress);
             otaProgressText.textContent = `${progress}% (${i + 1}/${totalChunks})`;
             
-            // Petit délai entre les chunks pour éviter de surcharger BLE
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 80));
         }
         
-        // Envoyer le message de fin
-        const endMessage = {
-            type: 'ota_end'
-        };
-        await sendDataToESP32(JSON.stringify(endMessage));
+        await sendDataToESP32(JSON.stringify({ type: 'ota_end' }));
         
-        // Attendre la confirmation
         otaProgressText.textContent = 'Mise à jour terminée, redémarrage...';
         otaProgressBar.style.width = '100%';
+        otaProgressBar.setAttribute('aria-valuenow', 100);
         
-        // Réinitialiser après 3 secondes
         setTimeout(() => {
             otaProgress.style.display = 'none';
             otaUpdateBtn.disabled = false;
+            const otaCheckBtn = document.getElementById('ota-check-updates-btn');
+            if (otaCheckBtn) otaCheckBtn.disabled = false;
             const otaFileInput = document.getElementById('ota-file-input');
-            if (otaFileInput) {
-                otaFileInput.value = '';
-            }
+            if (otaFileInput) otaFileInput.value = '';
+            document.querySelector('.ota-panel')?.classList.remove('ota-updating');
+            document.getElementById('settings-layout')?.classList.remove('ota-updating');
         }, 3000);
         
     } catch (error) {
         console.error('OTA Update Error:', error);
         alert('Erreur lors de la mise à jour: ' + error.message);
         otaProgress.style.display = 'none';
-        if (otaUpdateBtn) {
-            otaUpdateBtn.disabled = false;
-        }
+        if (otaUpdateBtn) otaUpdateBtn.disabled = false;
+        const otaCheckBtn = document.getElementById('ota-check-updates-btn');
+        if (otaCheckBtn) otaCheckBtn.disabled = false;
+        document.querySelector('.ota-panel')?.classList.remove('ota-updating');
+        document.getElementById('settings-layout')?.classList.remove('ota-updating');
     }
 }
 
@@ -1965,6 +2218,7 @@ function handleOTAMessage(data) {
         case 'progress':
             if (otaProgressBar) {
                 otaProgressBar.style.width = data.progress + '%';
+                otaProgressBar.setAttribute('aria-valuenow', data.progress);
             }
             if (otaProgressText) {
                 otaProgressText.textContent = `${data.progress}% (${data.chunk}/${data.total})`;
@@ -1986,9 +2240,10 @@ function handleOTAMessage(data) {
 
 // Charger les paramètres depuis localStorage
 function loadSettings() {
-    // Les paramètres sont déjà chargés avec loadConfig()
-    // On met juste à jour l'interface si les éléments existent
     try {
+        const bleName = document.getElementById('ble-device-name');
+        const serialAutoScroll = document.getElementById('serial-auto-scroll');
+        const serialMaxLines = document.getElementById('serial-max-lines');
         const debugEsp32 = document.getElementById('debug-esp32-enabled');
         const loggingEsp32 = document.getElementById('logging-esp32-enabled');
         const loggingAtmega = document.getElementById('logging-atmega-enabled');
@@ -1999,7 +2254,24 @@ function loadSettings() {
         const debugWeb = document.getElementById('debug-web-enabled');
         const debugDisplay = document.getElementById('debug-display-enabled');
         const debugConfig = document.getElementById('debug-config-enabled');
+        const otaGithubRepo = document.getElementById('ota-github-repo');
+        const webLoggingToggle = document.getElementById('web-logging-enabled');
+        const settingsLayout = document.getElementById('settings-layout');
+        const autoReconnect = document.getElementById('auto-reconnect-enabled');
         
+        if (bleName) bleName.value = config.settings?.bleDeviceName || config.bleDeviceName || '';
+        if (autoReconnect) autoReconnect.checked = config.settings?.autoReconnectEnabled !== false;
+        const defaultConnType = document.getElementById('default-connection-type');
+        if (defaultConnType) defaultConnType.value = config.settings?.defaultConnectionType || 'bluetooth';
+        const checkUpdatesStartup = document.getElementById('check-updates-on-startup');
+        if (checkUpdatesStartup) checkUpdatesStartup.checked = config.settings?.checkUpdatesOnStartup || false;
+        if (webLoggingToggle) {
+            webLoggingToggle.checked = config.settings?.webLoggingEnabled !== false;
+            if (settingsLayout) settingsLayout.classList.toggle('web-logging-off', !webLoggingToggle.checked);
+        }
+        if (otaGithubRepo) otaGithubRepo.value = config.settings?.githubFirmwareRepo || '';
+        if (serialAutoScroll) serialAutoScroll.checked = config.settings?.serialAutoScroll !== false;
+        if (serialMaxLines) serialMaxLines.value = String(config.settings?.serialMaxLines ?? 500);
         if (debugEsp32) debugEsp32.checked = config.settings?.debug?.esp32Enabled || false;
         if (loggingEsp32) loggingEsp32.checked = config.settings?.logging?.esp32Enabled || false;
         if (loggingAtmega) loggingAtmega.checked = config.settings?.logging?.atmegaEnabled || false;
@@ -2017,7 +2289,25 @@ function loadSettings() {
 
 // Réinitialiser les paramètres
 function resetSettings() {
+    const keepBle = config.settings?.bleDeviceName || '';
+    const keepAutoReconnect = config.settings?.autoReconnectEnabled !== false;
+    const keepDefaultConn = config.settings?.defaultConnectionType || 'bluetooth';
+    const keepCheckUpdates = config.settings?.checkUpdatesOnStartup || false;
+    const keepGithubRepo = config.settings?.githubFirmwareRepo || '';
+    const keepWebLogging = config.settings?.webLoggingEnabled !== false;
+    const keepTheme = config.settings?.theme || 'dark';
+    const keepSerialAuto = config.settings?.serialAutoScroll !== false;
+    const keepSerialMax = config.settings?.serialMaxLines ?? 500;
     config.settings = {
+        bleDeviceName: keepBle,
+        autoReconnectEnabled: keepAutoReconnect,
+        defaultConnectionType: keepDefaultConn,
+        checkUpdatesOnStartup: keepCheckUpdates,
+        githubFirmwareRepo: keepGithubRepo,
+        webLoggingEnabled: keepWebLogging,
+        theme: keepTheme,
+        serialAutoScroll: keepSerialAuto,
+        serialMaxLines: keepSerialMax,
         debug: {
             esp32Enabled: false,
             esp32LogLevel: 'info',
@@ -2036,7 +2326,7 @@ function resetSettings() {
     };
     saveConfig();
     loadSettings();
-    sendSettingsToESP32();
+    if (config.connected) sendSettingsToESP32();
 }
 
 // Envoyer les paramètres à l'ESP32
@@ -2049,6 +2339,7 @@ async function sendSettingsToESP32() {
     const data = JSON.stringify({
         type: 'settings',
         platform: detectPlatform(),
+        bleDeviceName: config.settings?.bleDeviceName || '',
         debug: {
             esp32Enabled: config.settings?.debug?.esp32Enabled || false,
             esp32LogLevel: config.settings?.debug?.esp32LogLevel || 'info',
@@ -2630,8 +2921,16 @@ function setupTabs() {
                 targetPanel.classList.add('active');
             }
             
-            if (typeof createIcons !== 'undefined') {
-                createIcons();
+            if (targetTab === 'settings' && config.settings?.checkUpdatesOnStartup) {
+                const repo = (document.getElementById('ota-github-repo')?.value || config.settings?.githubFirmwareRepo || '').trim();
+                if (repo) {
+                    const btn = document.getElementById('ota-check-updates-btn');
+                    if (btn) setTimeout(() => btn.click(), 300);
+                }
+            }
+            
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
             }
         });
     });

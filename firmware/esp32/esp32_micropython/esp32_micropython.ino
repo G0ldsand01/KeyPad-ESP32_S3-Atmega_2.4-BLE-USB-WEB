@@ -25,7 +25,39 @@
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include <Adafruit_NeoPixel.h>
+#include <Update.h>
 #include <string.h>
+
+// Base64 decode minimal (évite dépendance mbedtls)
+static int base64_decode(const char* in, size_t inlen, uint8_t* out, size_t outmax, size_t* outlen) {
+    static const int T[256] = {
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-2,-1,-1,
+        -1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1
+    };
+    size_t o = 0;
+    uint32_t v = 0;
+    int n = 0;
+    for (size_t i = 0; i < inlen; i++) {
+        int c = T[(unsigned char)in[i]];
+        if (c == -1) continue;
+        if (c == -2) break;  // padding
+        v = (v << 6) | (c & 0x3F);
+        n++;
+        if (n == 4) {
+            if (o + 3 > outmax) return -1;
+            out[o++] = (v >> 16) & 0xFF;
+            out[o++] = (v >> 8) & 0xFF;
+            out[o++] = v & 0xFF;
+            n = 0;
+        }
+    }
+    if (n == 2) { if (o + 1 > outmax) return -1; out[o++] = (v >> 4) & 0xFF; }
+    else if (n == 3) { if (o + 2 > outmax) return -1; out[o++] = (v >> 10) & 0xFF; out[o++] = (v >> 2) & 0xFF; }
+    *outlen = o;
+    return 0;
+}
 
 // ─── Instances globales (logique modulaire) ───────────────────────────────────
 KeyMatrix keyMatrix;
@@ -49,7 +81,7 @@ const char* DEFAULT_KEYMAP[NUM_ROWS][NUM_COLS] = {
 String KEYMAP[NUM_ROWS][NUM_COLS];
 
 // UART ATmega
-String atmega_rx_buffer = "";
+    String atmega_rx_buffer = "";
 unsigned long null_bytes_count = 0;
 unsigned long last_null_warning = 0;
 uint16_t last_light_level = 0;
@@ -76,8 +108,8 @@ Adafruit_NeoPixel ledStrip(LED_STRIP_COUNT, LED_STRIP_PIN, NEO_GRB + NEO_KHZ800)
 bool ota_in_progress = false;
 int ota_chunk_count = 0;
 int ota_total_chunks = 0;
-int ota_file_size = 0;
-String ota_file_content = "";
+size_t ota_file_size = 0;
+#define OTA_DECODE_BUF_SIZE 384  // Base64 decode buffer (256 bytes raw -> 344 chars base64)
 
 String last_key_pressed = "";
 unsigned long last_light_poll = 0;
@@ -832,7 +864,7 @@ void set_key_led_pressed(int row, int col, bool pressed) {
 // ==================== OTA UPDATES ====================
 
 void handle_ota_start(JsonObject& data) {
-    ota_file_size = data["size"].as<int>();
+    ota_file_size = (size_t)data["size"].as<int>();
     ota_total_chunks = data["chunks"].as<int>();
     String filename = data["filename"].as<String>();
     
@@ -841,12 +873,21 @@ void handle_ota_start(JsonObject& data) {
         return;
     }
     
-    ota_file_content = "";
+    if (Update.isRunning()) {
+        Update.abort();
+    }
+    
+    if (!Update.begin(ota_file_size, U_FLASH)) {
+        send_status_message("OTA begin failed: " + String(Update.errorString()));
+        Serial.printf("[OTA] begin failed: %s\n", Update.errorString());
+        return;
+    }
+    
     ota_in_progress = true;
     ota_chunk_count = 0;
     
-    Serial.printf("[OTA] Starting update: %s (%d bytes, %d chunks)\n",
-                  filename.c_str(), ota_file_size, ota_total_chunks);
+    Serial.printf("[OTA] Starting update: %s (%u bytes, %d chunks)\n",
+                  filename.c_str(), (unsigned)ota_file_size, ota_total_chunks);
     send_status_message("OTA: Starting update...");
     
     StaticJsonDocument<256> response;
@@ -859,22 +900,46 @@ void handle_ota_start(JsonObject& data) {
 }
 
 void handle_ota_chunk(JsonObject& data) {
-    if (!ota_in_progress) {
+    if (!ota_in_progress || !Update.isRunning()) {
         send_status_message("OTA: No update in progress");
         return;
     }
     
-    String chunk_data = data["data"].as<String>();
-    int chunk_index = data["index"].as<int>();
+    String chunk_b64 = data["data"].as<String>();
+    bool encoded = data.containsKey("encoded") && data["encoded"].as<bool>();
     
-    // Décoder base64 si nécessaire
-    if (data.containsKey("encoded") && data["encoded"].as<bool>()) {
-        // TODO: Implémenter le décodage base64 si nécessaire
+    size_t decoded_len = 0;
+    uint8_t decode_buf[OTA_DECODE_BUF_SIZE];
+    
+    if (encoded) {
+        int ret = base64_decode(chunk_b64.c_str(), chunk_b64.length(),
+                               decode_buf, sizeof(decode_buf), &decoded_len);
+        if (ret != 0 || decoded_len == 0) {
+            send_status_message("OTA: Base64 decode error");
+            Update.abort();
+            ota_in_progress = false;
+            return;
+        }
+    } else {
+        if (chunk_b64.length() > sizeof(decode_buf)) {
+            send_status_message("OTA: Chunk too large");
+            Update.abort();
+            ota_in_progress = false;
+            return;
+        }
+        memcpy(decode_buf, chunk_b64.c_str(), chunk_b64.length());
+        decoded_len = chunk_b64.length();
     }
     
-    ota_file_content += chunk_data;
-    ota_chunk_count++;
+    size_t written = Update.write(decode_buf, decoded_len);
+    if (written != decoded_len) {
+        send_status_message("OTA: Write failed");
+        Update.abort();
+        ota_in_progress = false;
+        return;
+    }
     
+    ota_chunk_count++;
     int progress = (ota_total_chunks > 0) ? (ota_chunk_count * 100 / ota_total_chunks) : 0;
     
     StaticJsonDocument<256> response;
@@ -887,29 +952,30 @@ void handle_ota_chunk(JsonObject& data) {
     serializeJson(response, output);
     send_to_web(output);
     
-    Serial.printf("[OTA] Received chunk %d/%d (%d%%)\n",
-                  ota_chunk_count, ota_total_chunks, progress);
+    Serial.printf("[OTA] Chunk %d/%d (%d%%)\n", ota_chunk_count, ota_total_chunks, progress);
 }
 
 void handle_ota_end(JsonObject& data) {
-    if (!ota_in_progress) {
+    if (!ota_in_progress || !Update.isRunning()) {
         send_status_message("OTA: No update in progress");
         return;
     }
     
     if (ota_chunk_count < ota_total_chunks) {
         send_status_message("OTA: Incomplete update");
+        Update.abort();
         ota_in_progress = false;
         return;
     }
     
-    if (ota_file_content.length() != ota_file_size) {
-        send_status_message("OTA: Size mismatch");
+    if (!Update.end(true)) {
+        send_status_message("OTA failed: " + String(Update.errorString()));
+        Serial.printf("[OTA] end failed: %s\n", Update.errorString());
         ota_in_progress = false;
         return;
     }
     
-    Serial.println("[OTA] Update completed successfully!");
+    Serial.println("[OTA] Update completed! Rebooting...");
     send_status_message("OTA: Update completed! Restarting...");
     
     StaticJsonDocument<256> response;
@@ -921,9 +987,6 @@ void handle_ota_end(JsonObject& data) {
     send_to_web(output);
     
     delay(500);
-    
-    // Note: Sur ESP32, OTA via Serial nécessite un mécanisme spécial
-    // Pour l'instant, on redémarre simplement
     ESP.restart();
 }
 
