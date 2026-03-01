@@ -749,16 +749,7 @@ async function connectToESP32() {
                         statusUpdateInterval = null;
                         updateConnectionStatus(false);
                         console.log('[BLE] Déconnecté par le périphérique');
-                        if (config.settings?.autoReconnectEnabled !== false && reconnectAttempts < maxReconnectAttempts) {
-                            reconnectAttempts++;
-                            setTimeout(() => {
-                                const btn = document.getElementById('connect-btn');
-                                const sel = document.getElementById('connection-type');
-                                if (btn && sel && sel.value === 'bluetooth') btn.click();
-                            }, 2000);
-                        } else {
-                            reconnectAttempts = 0;
-                        }
+                        reconnectAttempts = 0;
                     });
                 } else {
                     alert('Bluetooth n\'est pas supporté sur ce navigateur. Utilisez Chrome ou Edge.');
