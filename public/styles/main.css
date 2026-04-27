@@ -1369,6 +1369,12 @@ button.btn-primary:hover {
   font-size: 1rem;
 }
 
+#btn-add-wishlist.is-active {
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.08);
+}
+
 /* ========== Parallax Divider ========== */
 .parallax-divider {
   min-height: 36vh;
@@ -2540,6 +2546,44 @@ a, button {
   margin-inline: auto;
 }
 
+.auth-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.auth-switch__tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.65rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid var(--site-border);
+  background: rgba(10, 22, 40, 0.35);
+  color: var(--flexpad-text);
+  font-weight: 700;
+  cursor: pointer;
+  font: inherit;
+}
+
+.auth-switch__tab:hover {
+  border-color: rgba(212, 175, 55, 0.35);
+}
+
+.auth-switch__tab.is-active,
+.auth-switch__tab[aria-selected="true"] {
+  border-color: rgba(212, 175, 55, 0.55);
+  background: rgba(212, 175, 55, 0.12);
+  color: var(--flexpad-gold);
+}
+
+.auth-panel {
+  min-width: 0;
+}
+
 .auth-form {
   margin-top: 1.75rem;
 }
@@ -2588,6 +2632,33 @@ a, button {
 .auth-form .btn-primary {
   width: 100%;
   margin-top: 0.25rem;
+}
+
+.auth-form .btn-secondary {
+  width: 100%;
+  margin-top: 0.25rem;
+}
+
+.auth-page .back-link {
+  margin-top: 1.5rem;
+  text-align: center;
+}
+
+.auth-page .back-link a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.55rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid var(--site-border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--flexpad-gray);
+}
+
+.auth-page .back-link a:hover {
+  border-color: rgba(212, 175, 55, 0.35);
+  color: var(--flexpad-gold);
+  text-decoration: none;
 }
 
 .auth-page__hint {
