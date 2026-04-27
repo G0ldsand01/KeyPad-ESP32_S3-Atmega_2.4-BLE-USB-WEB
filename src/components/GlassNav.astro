@@ -60,66 +60,76 @@ const dockId = 'glass-nav-dock';
   </nav>
 </div>
 
-<script>
-  function setupGlassNav() {
-    const toggle = document.getElementById('glass-nav-toggle');
-    const panel = document.getElementById('glass-nav-panel');
-    const mount = document.getElementById('glass-nav-mount');
-    const backdrop = document.getElementById('glass-nav-backdrop');
-    if (!toggle || !panel || !mount || !backdrop) return;
-    if (toggle.dataset.glassNavBound === '1') return;
-    toggle.dataset.glassNavBound = '1';
-
-    const mq = window.matchMedia('(max-width: 1024px)');
-
-    function setOpen(open) {
-      mount.classList.toggle('glass-nav-mount--open', open);
-      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-      toggle.setAttribute('aria-label', open ? 'Fermer le menu' : 'Ouvrir le menu');
-      backdrop.setAttribute('aria-hidden', open ? 'false' : 'true');
-      document.body.classList.toggle('glass-nav-menu-open', open);
+<script is:inline>
+  (function () {
+    function whenDocumentReady(cb) {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', cb, { once: true });
+      } else {
+        queueMicrotask(cb);
+      }
     }
 
-    function close() {
-      setOpen(false);
-    }
+    function setupGlassNav() {
+      const toggle = document.getElementById('glass-nav-toggle');
+      const panel = document.getElementById('glass-nav-panel');
+      const mount = document.getElementById('glass-nav-mount');
+      const backdrop = document.getElementById('glass-nav-backdrop');
+      if (!toggle || !panel || !mount || !backdrop) return;
+      if (toggle.dataset.glassNavBound === '1') return;
+      toggle.dataset.glassNavBound = '1';
 
-    toggle.addEventListener('click', () => {
-      if (!mq.matches) return;
-      const open = toggle.getAttribute('aria-expanded') === 'true';
-      setOpen(!open);
-    });
+      const mq = window.matchMedia('(max-width: 1024px)');
 
-    backdrop.addEventListener('click', close);
+      function setOpen(open) {
+        mount.classList.toggle('glass-nav-mount--open', open);
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggle.setAttribute('aria-label', open ? 'Fermer le menu' : 'Ouvrir le menu');
+        backdrop.setAttribute('aria-hidden', open ? 'false' : 'true');
+        document.body.classList.toggle('glass-nav-menu-open', open);
+      }
 
-    panel.querySelectorAll('a.glass-nav__link').forEach((a) => {
-      a.addEventListener('click', () => {
-        if (mq.matches) close();
+      function close() {
+        setOpen(false);
+      }
+
+      toggle.addEventListener('click', () => {
+        if (!mq.matches) return;
+        const open = toggle.getAttribute('aria-expanded') === 'true';
+        setOpen(!open);
       });
-    });
 
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && mq.matches && mount.classList.contains('glass-nav-mount--open')) {
-        close();
-        toggle.focus();
-      }
-    });
+      backdrop.addEventListener('click', close);
 
-    function applyMq() {
-      if (!mq.matches) {
-        close();
+      panel.querySelectorAll('a.glass-nav__link').forEach((a) => {
+        a.addEventListener('click', () => {
+          if (mq.matches) close();
+        });
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && mq.matches && mount.classList.contains('glass-nav-mount--open')) {
+          close();
+          toggle.focus();
+        }
+      });
+
+      function applyMq() {
+        if (!mq.matches) {
+          close();
+        }
       }
+
+      if (typeof mq.addEventListener === 'function') {
+        mq.addEventListener('change', applyMq);
+      } else {
+        mq.addListener(applyMq);
+      }
+
+      applyMq();
     }
 
-    if (typeof mq.addEventListener === 'function') {
-      mq.addEventListener('change', applyMq);
-    } else {
-      mq.addListener(applyMq);
-    }
-
-    applyMq();
-  }
-
-  setupGlassNav();
-  document.addEventListener('astro:page-load', setupGlassNav);
+    whenDocumentReady(setupGlassNav);
+    document.addEventListener('astro:page-load', setupGlassNav);
+  })();
 </script>

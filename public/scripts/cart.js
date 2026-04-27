@@ -3,6 +3,14 @@
  * Réinit sur astro:page-load (View Transitions)
  */
 
+function whenDocumentReady(cb) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', cb, { once: true });
+  } else {
+    queueMicrotask(cb);
+  }
+}
+
 const CART_KEY = 'flexpad_cart';
 const PRODUCT = {
   id: 'flexpad',
@@ -464,7 +472,8 @@ function initCart() {
   bindRemoveFromCartButtons(signal);
   bindQuantityInputs(signal);
   updateCartUI();
+  document.dispatchEvent(new CustomEvent('flexpad:cart-ready', { bubbles: true }));
 }
 
 document.addEventListener('astro:page-load', initCart);
-document.addEventListener('DOMContentLoaded', initCart);
+whenDocumentReady(initCart);

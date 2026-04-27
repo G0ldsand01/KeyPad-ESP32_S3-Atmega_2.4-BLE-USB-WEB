@@ -169,6 +169,7 @@ body:has(.main-page) {
 
 .glass-nav-mount--open .glass-nav__backdrop {
   display: block;
+  pointer-events: auto;
 }
 
 .glass-nav__inner {

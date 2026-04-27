@@ -21,33 +21,43 @@
   </a>
 </div>
 
-<script>
-  function updateAuthDock() {
-    const link = document.getElementById('auth-dock-link');
-    const label = document.getElementById('auth-dock-label');
-    if (!link || !label) return;
-    const def = link.dataset.defaultLabel ?? 'Connexion';
-    const logged = link.dataset.loggedLabel ?? 'Compte';
-    fetch('/api/auth/session', { credentials: 'same-origin' })
-      .then((r) => r.json())
-      .then((data) => {
-        if (data?.user) {
-          link.setAttribute('href', '/dashboard');
-          label.textContent = logged;
-          link.setAttribute('aria-label', logged);
-        } else {
+<script is:inline>
+  (function () {
+    function whenDocumentReady(cb) {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', cb, { once: true });
+      } else {
+        queueMicrotask(cb);
+      }
+    }
+
+    function updateAuthDock() {
+      const link = document.getElementById('auth-dock-link');
+      const label = document.getElementById('auth-dock-label');
+      if (!link || !label) return;
+      const def = link.dataset.defaultLabel ?? 'Connexion';
+      const logged = link.dataset.loggedLabel ?? 'Compte';
+      fetch('/api/auth/session', { credentials: 'same-origin' })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data?.user) {
+            link.setAttribute('href', '/dashboard');
+            label.textContent = logged;
+            link.setAttribute('aria-label', logged);
+          } else {
+            link.setAttribute('href', '/login');
+            label.textContent = def;
+            link.setAttribute('aria-label', def);
+          }
+        })
+        .catch(() => {
           link.setAttribute('href', '/login');
           label.textContent = def;
           link.setAttribute('aria-label', def);
-        }
-      })
-      .catch(() => {
-        link.setAttribute('href', '/login');
-        label.textContent = def;
-        link.setAttribute('aria-label', def);
-      });
-  }
+        });
+    }
 
-  document.addEventListener('DOMContentLoaded', updateAuthDock);
-  document.addEventListener('astro:page-load', updateAuthDock);
+    document.addEventListener('astro:page-load', updateAuthDock);
+    whenDocumentReady(updateAuthDock);
+  })();
 </script>

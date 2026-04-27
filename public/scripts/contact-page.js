@@ -2,6 +2,14 @@
  * Page Contact — formulaire mailto, compatible View Transitions
  */
 
+function whenDocumentReady(cb) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', cb, { once: true });
+  } else {
+    queueMicrotask(cb);
+  }
+}
+
 let contactAbort = null;
 
 function initContactPage() {
@@ -37,4 +45,4 @@ function initContactPage() {
 }
 
 document.addEventListener('astro:page-load', initContactPage);
-document.addEventListener('DOMContentLoaded', initContactPage);
+whenDocumentReady(initContactPage);
