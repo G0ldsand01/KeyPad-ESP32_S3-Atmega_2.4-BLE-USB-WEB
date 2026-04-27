@@ -14,8 +14,13 @@ interface Props {
 }
 
 const { title = "Configuration Macropad", site = false, backdrop = false } = Astro.props;
-// Cache-buster pour Vercel/CDN: force le refresh des fichiers /public/ à chaque build.
-const assetVersion = (import.meta.env.PUBLIC_ASSET_VERSION ?? Date.now().toString(36)).toString();
+// Version d’assets stable par déploiement (évite les caches agressifs sur Vercel)
+const deployVersion =
+  import.meta.env.PUBLIC_ASSET_VERSION ??
+  (typeof process !== 'undefined' ? process.env.VERCEL_GIT_COMMIT_SHA : undefined) ??
+  (typeof process !== 'undefined' ? process.env.VERCEL_DEPLOYMENT_ID : undefined) ??
+  Date.now().toString(36);
+const assetVersion = String(deployVersion).slice(0, 16);
 ---
 
 <!DOCTYPE html>
@@ -37,6 +42,7 @@ const assetVersion = (import.meta.env.PUBLIC_ASSET_VERSION ?? Date.now().toStrin
     <link rel="stylesheet" href="/styles/site-backdrop.css" />
   )}
   <link rel="stylesheet" href="/styles/glass-nav.css" />
+  <meta name="flexpad-build" content={assetVersion} />
   <ViewTransitions />
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.563.0/dist/umd/lucide.min.js" crossorigin="anonymous"></script>
 </head>

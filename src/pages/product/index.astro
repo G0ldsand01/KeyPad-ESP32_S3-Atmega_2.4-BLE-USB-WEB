@@ -1,5 +1,12 @@
 ---
 import Layout from '../../layouts/Layout.astro';
+
+const deployVersion =
+  import.meta.env.PUBLIC_ASSET_VERSION ??
+  (typeof process !== 'undefined' ? process.env.VERCEL_GIT_COMMIT_SHA : undefined) ??
+  (typeof process !== 'undefined' ? process.env.VERCEL_DEPLOYMENT_ID : undefined) ??
+  Date.now().toString(36);
+const assetVersion = String(deployVersion).slice(0, 16);
 ---
 
 <Layout site title="FlexPad - Détails du produit | BE PRODUCTIVE">
@@ -169,5 +176,5 @@ import Layout from '../../layouts/Layout.astro';
     </div>
   </div>
 
-  <script is:inline src="/scripts/wishlist-product.js"></script>
+  <script is:inline src={`/scripts/wishlist-product.js?v=${assetVersion}`}></script>
 </Layout>
