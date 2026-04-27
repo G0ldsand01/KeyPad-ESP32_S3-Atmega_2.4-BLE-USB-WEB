@@ -74,18 +74,24 @@
           <span id="brightness-value" class="slider-value">50%</span>
         </div>
       </div>
+
+      <div class="form-group">
+        <label for="backlight-light-source">Source luminosité ambiante</label>
+        <select id="backlight-light-source" class="form-control">
+          <option value="atmega">ATmega (UART)</option>
+          <option value="esp32">ESP32 (ADC)</option>
+        </select>
+        <p class="form-hint">Choisis d’où provient la valeur ADC (sans re-téléverser le firmware).</p>
+      </div>
+
       <div class="form-group">
         <label class="checkbox-label">
           <input type="checkbox" id="env-brightness">
           <span>Selon l'environnement</span>
         </label>
-        <p class="form-hint">Active la LED en faible luminosité (&lt;500), désactive en forte luminosité</p>
+        <p class="form-hint">Active le rétro-éclairage en faible luminosité (&lt;500) et le désactive en forte luminosité.</p>
       </div>
-    </section>
 
-    <!-- Section: Luminosité ambiante -->
-    <section class="backlight-section backlight-ambient">
-      <h3>Luminosité ambiante</h3>
       <div class="light-display">
         <div class="light-meter-wrapper">
           <div class="light-meter-track">
@@ -114,6 +120,45 @@
         </div>
       </div>
     </section>
+
+    <section class="backlight-section backlight-advanced">
+      <h3>Bande LED et animations</h3>
+      <p class="form-hint">Nombre total de pixels sur la ligne DATA (ex. 17 = pixel réservé + 16 touches). Ne pas dépasser le nombre réel de WS2812 sur la carte.</p>
+      <div class="form-group">
+        <label for="backlight-led-count">Nombre de LEDs (chaîne)</label>
+        <input type="number" id="backlight-led-count" class="form-control" min="1" max="48" value="17" step="1" />
+      </div>
+      <div class="form-group">
+        <label for="backlight-anim-mode">Animation</label>
+        <select id="backlight-anim-mode" class="form-control">
+          <option value="solid">Fixe (couleur uniforme)</option>
+          <option value="breathe">Respiration</option>
+          <option value="rainbow">Arc-en-ciel</option>
+          <option value="chase">Poursuite</option>
+          <option value="scanner">Scanner (va-et-vient)</option>
+          <option value="sparkle">Étincelles</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="backlight-anim-speed">Période / vitesse</label>
+        <div class="slider-row">
+          <input type="range" id="backlight-anim-speed" class="slider" min="200" max="12000" value="2500" step="100" />
+          <span id="backlight-anim-speed-value" class="slider-value">2500 ms</span>
+        </div>
+        <p class="form-hint">Durée d’un cycle (respiration, arc-en-ciel, scanner).</p>
+      </div>
+      <div class="form-group">
+        <label for="backlight-anim-length">Longueur de la traînée</label>
+        <div class="slider-row">
+          <input type="range" id="backlight-anim-length" class="slider" min="1" max="24" value="3" step="1" />
+          <span id="backlight-anim-length-value" class="slider-value">3</span>
+        </div>
+        <p class="form-hint">Largeur du segment lumineux pour poursuite et scanner.</p>
+      </div>
+    </section>
+
+    <!-- Section: Luminosité ambiante -->
+    <!-- (Les contrôles + niveaux sont regroupés dans "Contrôles") -->
   </div>
 
   <div class="backlight-actions">

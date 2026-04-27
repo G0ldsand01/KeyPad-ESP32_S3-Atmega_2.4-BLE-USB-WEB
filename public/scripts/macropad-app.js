@@ -12,7 +12,13 @@ let config = {
         envBrightness: false,
         colorR: 255,
         colorG: 180,
-        colorB: 50
+        colorB: 50,
+        lightSource: 'atmega',
+        ledCount: 17,
+        ledMax: 48,
+        animMode: 'solid',
+        animSpeed: 2500,
+        animLength: 3
     },
     fingerprint: {
         enabled: false,
@@ -78,6 +84,7 @@ const maxReconnectAttempts = 5;
 let statusUpdateInterval = null;
 let bleWritePromise = Promise.resolve(); // File d'attente pour éviter "GATT operation already in progress"
 let backlightDebounceTimer = null;
+let backlightAdvDebounceTimer = null;
 let backlightColorPreviewTimer = null;
 let backlightPickerH = 30;
 let backlightPickerS = 1;
@@ -1130,7 +1137,23 @@ function handleESP32Message(data) {
                 if (b.colorR !== undefined) config.backlight.colorR = Math.max(0, Math.min(255, Number(b.colorR) | 0));
                 if (b.colorG !== undefined) config.backlight.colorG = Math.max(0, Math.min(255, Number(b.colorG) | 0));
                 if (b.colorB !== undefined) config.backlight.colorB = Math.max(0, Math.min(255, Number(b.colorB) | 0));
+                if (b.ledMax !== undefined) {
+                    config.backlight.ledMax = Math.max(1, Math.min(128, Number(b.ledMax) | 0));
+                }
+                if (b.ledCount !== undefined) {
+                    const mx = config.backlight.ledMax || 48;
+                    config.backlight.ledCount = Math.max(1, Math.min(mx, Number(b.ledCount) | 0));
+                }
+                if (b.animMode !== undefined) config.backlight.animMode = String(b.animMode);
+                if (b.animSpeed !== undefined) {
+                    config.backlight.animSpeed = Math.max(200, Math.min(12000, Number(b.animSpeed) | 0));
+                }
+                if (b.animLength !== undefined) {
+                    config.backlight.animLength = Math.max(1, Math.min(24, Number(b.animLength) | 0));
+                }
+                if (b.lightSource !== undefined) config.backlight.lightSource = String(b.lightSource);
                 ensureBacklightDefaults(config.backlight);
+                refreshBacklightAdvancedUI();
                 applyBacklightStateToUI();
             }
             if (hadKeys || (data.backlight && typeof data.backlight === 'object')) {
@@ -1153,7 +1176,9 @@ function handleESP32Message(data) {
         case 'light':
             if (data.level !== undefined && (config.lastLightLevel === undefined || config.lastLightLevel !== data.level)) {
                 config.lastLightLevel = data.level;
-                console.log(`[DEBUG] [WEB_UI] Light level update: ${data.level}`);
+                if (config.settings?.debug?.web) {
+                    console.log(`[DEBUG] [WEB_UI] Light level update: ${data.level}`);
+                }
                 updateLightLevel(data.level);
             }
             break;
@@ -1228,7 +1253,13 @@ function loadConfig() {
             envBrightness: false,
             colorR: 255,
             colorG: 180,
-            colorB: 50
+            colorB: 50,
+            lightSource: 'atmega',
+            ledCount: 17,
+            ledMax: 48,
+            animMode: 'solid',
+            animSpeed: 2500,
+            animLength: 3
         };
         config = { ...config, ...savedConfig };
         const fromSavedBl = savedConfig.backlight && typeof savedConfig.backlight === 'object' ? savedConfig.backlight : null;
@@ -1324,6 +1355,56 @@ function ensureBacklightDefaults(bl) {
     bl.colorR = Math.max(0, Math.min(255, Math.round(bl.colorR)));
     bl.colorG = Math.max(0, Math.min(255, Math.round(bl.colorG)));
     bl.colorB = Math.max(0, Math.min(255, Math.round(bl.colorB)));
+    if (typeof bl.ledMax !== 'number' || Number.isNaN(bl.ledMax)) bl.ledMax = 48;
+    bl.ledMax = Math.max(2, Math.min(128, Math.round(bl.ledMax)));
+    if (typeof bl.ledCount !== 'number' || Number.isNaN(bl.ledCount)) bl.ledCount = 17;
+    bl.ledCount = Math.max(1, Math.min(bl.ledMax, Math.round(bl.ledCount)));
+    if (bl.lightSource === undefined || bl.lightSource === null) bl.lightSource = 'atmega';
+    bl.lightSource = String(bl.lightSource);
+    if (!['atmega', 'esp32'].includes(bl.lightSource)) bl.lightSource = 'atmega';
+    if (bl.animMode === undefined || bl.animMode === null) bl.animMode = 'solid';
+    bl.animMode = String(bl.animMode);
+    if (typeof bl.animSpeed !== 'number' || Number.isNaN(bl.animSpeed)) bl.animSpeed = 2500;
+    bl.animSpeed = Math.max(200, Math.min(12000, Math.round(bl.animSpeed)));
+    if (typeof bl.animLength !== 'number' || Number.isNaN(bl.animLength)) bl.animLength = 3;
+    bl.animLength = Math.max(1, Math.min(24, Math.round(bl.animLength)));
+}
+
+function refreshBacklightAdvancedUI() {
+    ensureBacklightDefaults(config.backlight);
+    const bl = config.backlight;
+    const mx = bl.ledMax || 48;
+    const ledInput = document.getElementById('backlight-led-count');
+    if (ledInput) {
+        ledInput.min = '1';
+        ledInput.max = String(mx);
+        ledInput.value = String(bl.ledCount);
+    }
+    const animSel = document.getElementById('backlight-anim-mode');
+    if (animSel) {
+        const v = bl.animMode || 'solid';
+        animSel.value = ['solid', 'breathe', 'rainbow', 'chase', 'scanner', 'sparkle'].includes(v) ? v : 'solid';
+    }
+    const srcSel = document.getElementById('backlight-light-source');
+    if (srcSel) {
+        srcSel.value = bl.lightSource === 'esp32' ? 'esp32' : 'atmega';
+    }
+    const speedSl = document.getElementById('backlight-anim-speed');
+    const speedVal = document.getElementById('backlight-anim-speed-value');
+    if (speedSl) speedSl.value = String(bl.animSpeed);
+    if (speedVal) speedVal.textContent = `${bl.animSpeed} ms`;
+    const lenSl = document.getElementById('backlight-anim-length');
+    const lenVal = document.getElementById('backlight-anim-length-value');
+    if (lenSl) lenSl.value = String(bl.animLength);
+    if (lenVal) lenVal.textContent = String(bl.animLength);
+}
+
+function scheduleBacklightAdvancedSend() {
+    if (backlightAdvDebounceTimer) clearTimeout(backlightAdvDebounceTimer);
+    backlightAdvDebounceTimer = setTimeout(async () => {
+        backlightAdvDebounceTimer = null;
+        if (config.connected) await sendBacklightConfig();
+    }, 450);
 }
 
 function rgbToHex(r, g, b) {
@@ -1773,6 +1854,62 @@ function setupBacklightControls() {
     }
     const abb = document.getElementById('apply-backlight-btn');
     if (abb) abb.addEventListener('click', async () => { await sendBacklightConfig(); alert('Configuration du rétro-éclairage appliquée'); });
+
+    refreshBacklightAdvancedUI();
+    const ledInput = document.getElementById('backlight-led-count');
+    if (ledInput) {
+        ledInput.addEventListener('change', () => {
+            const mx = config.backlight.ledMax || 48;
+            let n = parseInt(ledInput.value, 10) || 1;
+            n = Math.max(1, Math.min(mx, n));
+            ledInput.value = String(n);
+            config.backlight.ledCount = n;
+            saveConfig();
+            scheduleBacklightAdvancedSend();
+        });
+    }
+    const animSel = document.getElementById('backlight-anim-mode');
+    if (animSel) {
+        animSel.addEventListener('change', () => {
+            config.backlight.animMode = animSel.value || 'solid';
+            saveConfig();
+            scheduleBacklightAdvancedSend();
+        });
+    }
+    const srcSel = document.getElementById('backlight-light-source');
+    if (srcSel) {
+        srcSel.addEventListener('change', () => {
+            config.backlight.lightSource = srcSel.value === 'esp32' ? 'esp32' : 'atmega';
+            saveConfig();
+            scheduleBacklightAdvancedSend();
+        });
+    }
+    const speedSl = document.getElementById('backlight-anim-speed');
+    const speedVal = document.getElementById('backlight-anim-speed-value');
+    if (speedSl && speedVal) {
+        speedSl.addEventListener('input', () => {
+            const sp = Math.max(200, Math.min(12000, parseInt(speedSl.value, 10) || 2500));
+            speedVal.textContent = `${sp} ms`;
+            config.backlight.animSpeed = sp;
+        });
+        speedSl.addEventListener('change', () => {
+            saveConfig();
+            scheduleBacklightAdvancedSend();
+        });
+    }
+    const lenSl = document.getElementById('backlight-anim-length');
+    const lenVal = document.getElementById('backlight-anim-length-value');
+    if (lenSl && lenVal) {
+        lenSl.addEventListener('input', () => {
+            const Ln = Math.max(1, Math.min(24, parseInt(lenSl.value, 10) || 3));
+            lenVal.textContent = String(Ln);
+            config.backlight.animLength = Ln;
+        });
+        lenSl.addEventListener('change', () => {
+            saveConfig();
+            scheduleBacklightAdvancedSend();
+        });
+    }
 }
 
 // Configurer les contrôles du capteur d'empreinte
@@ -2787,6 +2924,7 @@ function loadSettings() {
         if (debugWeb) debugWeb.checked = config.settings?.debug?.web || false;
         if (debugDisplay) debugDisplay.checked = config.settings?.debug?.display || false;
         if (debugConfig) debugConfig.checked = config.settings?.debug?.config || false;
+
     } catch (error) {
         console.warn('[SETTINGS] Error loading settings:', error);
     }
@@ -2917,9 +3055,10 @@ async function sendBacklightConfig() {
     return new Promise((resolve) => {
         backlightDebounceTimer = setTimeout(async () => {
             backlightDebounceTimer = null;
+            const { ledMax: _ledMaxDrop, ...blPayload } = config.backlight;
             const data = JSON.stringify({
                 type: 'backlight',
-                ...config.backlight
+                ...blPayload
             });
             console.log('[DEBUG] Sending backlight config:', data);
             try {
