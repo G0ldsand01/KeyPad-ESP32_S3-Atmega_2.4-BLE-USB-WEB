@@ -27,6 +27,15 @@ function setupLucideThemeObserver() {
   });
 }
 
+function macropadModuleSpecifier() {
+  // Évite les résolutions relatives bizarres quand ce fichier est servi avec ?v=… (cache-bust) :
+  // en prod (Vercel) certains navigateurs résolvaient mal ./macropad-app.js.
+  if (typeof import.meta.url === 'string' && import.meta.url.length > 0) {
+    return new URL('./macropad-app.js', import.meta.url).href;
+  }
+  return '/scripts/macropad-app.js';
+}
+
 async function bootMacropad() {
   if (!document.getElementById('tab-main')) {
     if (lucideThemeObserver) {
@@ -36,9 +45,26 @@ async function bootMacropad() {
     return;
   }
   const token = ++macropadBootToken;
-  const { initApp } = await import('./macropad-app.js');
+  let initApp;
+  const spec = macropadModuleSpecifier();
+  try {
+    ({ initApp } = await import(spec));
+  } catch (e) {
+    console.error('[config-page] import dynamique échoué:', spec, e);
+    try {
+      ({ initApp } = await import('/scripts/macropad-app.js'));
+    } catch (e2) {
+      console.error('[config-page] repli /scripts/macropad-app.js échoué:', e2);
+      return;
+    }
+  }
   if (token !== macropadBootToken) return;
-  initApp();
+  try {
+    initApp();
+  } catch (e) {
+    console.error('[config-page] initApp:', e);
+    return;
+  }
   setupLucideThemeObserver();
 }
 

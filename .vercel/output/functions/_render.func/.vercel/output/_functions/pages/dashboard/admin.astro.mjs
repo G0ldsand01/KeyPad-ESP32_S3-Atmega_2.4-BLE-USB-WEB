@@ -1,5 +1,5 @@
 import { c as createComponent, g as renderComponent, r as renderTemplate, d as createAstro, m as maybeRenderHead } from '../../chunks/astro/server_DYDqy7ws.mjs';
-import { $ as $$Layout } from '../../chunks/Layout_BslENFpV.mjs';
+import { $ as $$Layout } from '../../chunks/Layout_B3T-4WXt.mjs';
 import { $ as $$DashboardChrome } from '../../chunks/DashboardChrome_CnSmYUvn.mjs';
 import { g as getSession } from '../../chunks/server_CatkvZha.mjs';
 import { d as db, o as orders, u as users } from '../../chunks/index_CRES2LJX.mjs';
