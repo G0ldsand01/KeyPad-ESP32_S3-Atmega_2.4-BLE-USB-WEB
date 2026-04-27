@@ -8,6 +8,14 @@ import { parseOrderStatus } from '../../../lib/orders';
 export const prerender = false;
 
 export const POST: APIRoute = async ({ request }) => {
+  const url = process.env.DATABASE_URL?.trim();
+  if (!url || !/^postgres(ql)?:\/\//i.test(url)) {
+    return new Response(JSON.stringify({ error: 'Base de données désactivée (démo Vercel)' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const session = await getSession(request);
   if (!session?.user || session.user.role !== 'admin') {
     return new Response(JSON.stringify({ error: 'Interdit' }), {

@@ -26,6 +26,30 @@ const title = 'Connexion | FlexPad';
         <button type="submit" class="btn-primary">Se connecter</button>
       </form>
 
+      <div class="dashboard-card auth-register-card">
+        <h2 class="dashboard-card__title">Créer un compte</h2>
+        <p class="dashboard-note">
+          Créez un compte pour accéder au tableau de bord. (Sur Vercel sans base de données, l’inscription peut être désactivée.)
+        </p>
+        <form class="auth-form" id="register-form" novalidate>
+          <div class="form-group">
+            <label for="register-name">Nom</label>
+            <input type="text" id="register-name" name="name" class="form-control-like" autocomplete="name" />
+          </div>
+          <div class="form-group">
+            <label for="register-email">Courriel</label>
+            <input type="email" id="register-email" name="email" class="form-control-like" required autocomplete="email" />
+          </div>
+          <div class="form-group">
+            <label for="register-password">Mot de passe</label>
+            <input type="password" id="register-password" name="password" class="form-control-like" required autocomplete="new-password" minlength="6" />
+            <span class="form-hint">Minimum 6 caractères.</span>
+          </div>
+          <p class="auth-form__error" id="register-error" hidden></p>
+          <button type="submit" class="btn-secondary">Créer le compte</button>
+        </form>
+      </div>
+
       <p class="auth-page__hint">
         Compte démo : <code>demo@flexpad.local</code> / <code>flexpad-demo</code> (après <code>pnpm run db:seed</code>).
       </p>
@@ -40,6 +64,8 @@ const title = 'Connexion | FlexPad';
 <script define:vars={{ callbackUrl }}>
   const form = document.getElementById('login-form');
   const errEl = document.getElementById('login-error');
+  const registerForm = document.getElementById('register-form');
+  const registerErrEl = document.getElementById('register-error');
 
   /** Connexion credentials sans `auth-astro/client` : leur `signIn` fait `new URL(data.url)` sans base, ce qui jette si Auth renvoie une URL relative (succès). */
   async function signInCredentials(email, password, nextUrl) {
@@ -121,6 +147,51 @@ const title = 'Connexion | FlexPad';
       if (errEl) {
         errEl.textContent = 'Une erreur est survenue. Réessayez.';
         errEl.hidden = false;
+      }
+    }
+  });
+
+  registerForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (registerErrEl) {
+      registerErrEl.hidden = true;
+      registerErrEl.textContent = '';
+    }
+    const fd = new FormData(registerForm);
+    const payload = {
+      name: String(fd.get('name') || ''),
+      email: String(fd.get('email') || ''),
+      password: String(fd.get('password') || ''),
+    };
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (registerErrEl) {
+          registerErrEl.textContent = j.error || 'Inscription impossible.';
+          registerErrEl.hidden = false;
+        }
+        return;
+      }
+
+      // Auto-login après inscription
+      const nextUrl = callbackUrl || '/dashboard';
+      const out = await signInCredentials(payload.email, payload.password, nextUrl);
+      if (out.ok) window.location.assign(out.redirectTo);
+      else if (registerErrEl) {
+        registerErrEl.textContent = 'Compte créé, mais connexion impossible. Réessayez.';
+        registerErrEl.hidden = false;
+      }
+    } catch (err) {
+      console.error('[register]', err);
+      if (registerErrEl) {
+        registerErrEl.textContent = 'Une erreur est survenue. Réessayez.';
+        registerErrEl.hidden = false;
       }
     }
   });

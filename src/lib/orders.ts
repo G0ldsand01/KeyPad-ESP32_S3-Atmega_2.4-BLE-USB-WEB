@@ -26,7 +26,7 @@ export function normalizeCartPayload(cart: unknown): NormalizedCart | null {
     if (!row || typeof row !== 'object') continue;
     const id = (row as { id?: string }).id;
     if (id !== 'flexpad') continue;
-    const q = Math.min(10, Math.max(1, Math.floor(Number((row as { quantity?: number }).quantity) || 0)));
+    const q = Math.max(1, Math.floor(Number((row as { quantity?: number }).quantity) || 0));
     if (q < 1) continue;
     const name = String((row as { name?: string }).name || 'FlexPad');
     const tagline = (row as { tagline?: string }).tagline;

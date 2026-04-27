@@ -1,0 +1,170 @@
+---
+---
+
+<div class="backlight-panel backlight-panel-full">
+  <h2 class="backlight-title">
+    <i data-lucide="sun" class="backlight-title-icon"></i>
+    Rétro-éclairage
+  </h2>
+
+  <div class="backlight-grid">
+    <!-- Section: Contrôles -->
+    <section class="backlight-section backlight-controls">
+      <h3>Contrôles</h3>
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="backlight-enabled" checked>
+          <span>Activer le rétro-éclairage</span>
+        </label>
+      </div>
+      <div class="form-group backlight-color-group">
+        <label>Couleur du rétroéclairage (LED)</label>
+        <div class="backlight-color-wrap">
+          <button type="button" id="backlight-color-trigger" class="backlight-color-trigger" aria-expanded="false" aria-haspopup="dialog" aria-controls="backlight-color-popover">
+            <span id="backlight-color-swatch" class="backlight-color-swatch" style="background:#ffb432"></span>
+            <span class="backlight-color-trigger-label">Choisir une couleur…</span>
+          </button>
+          <div id="backlight-color-popover" class="backlight-color-popover" role="dialog" aria-label="Sélecteur de couleur" hidden>
+            <div class="color-popover-tabs" role="tablist">
+              <button type="button" class="color-tab-btn is-active" data-tab="wheel" role="tab" aria-selected="true">Roue</button>
+              <button type="button" class="color-tab-btn" data-tab="palette" role="tab" aria-selected="false">Palette</button>
+              <button type="button" class="color-tab-btn" data-tab="code" role="tab" aria-selected="false">Hex / RVB</button>
+            </div>
+            <div id="color-tab-wheel" class="color-tab-panel" role="tabpanel">
+              <p class="form-hint color-popover-hint">Cercle = teinte · Carré = saturation et luminosité</p>
+              <div class="color-wheel-row">
+                <canvas id="backlight-hue-wheel" class="backlight-hue-wheel" width="200" height="200" aria-label="Roue des teintes"></canvas>
+                <canvas id="backlight-sv-plane" class="backlight-sv-plane" width="200" height="140" aria-label="Saturation et luminosité"></canvas>
+              </div>
+            </div>
+            <div id="color-tab-palette" class="color-tab-panel is-hidden" role="tabpanel" hidden>
+              <div id="backlight-palette-grid" class="backlight-palette-grid"></div>
+            </div>
+            <div id="color-tab-code" class="color-tab-panel is-hidden" role="tabpanel" hidden>
+              <div class="form-group color-code-row">
+                <label for="backlight-color-hex">Hex</label>
+                <input type="text" id="backlight-color-hex" class="form-control color-hex-input" maxlength="7" placeholder="#RRGGBB" autocomplete="off">
+              </div>
+              <div class="color-rgb-row">
+                <div class="form-group">
+                  <label for="backlight-color-r">R</label>
+                  <input type="number" id="backlight-color-r" class="form-control" min="0" max="255" step="1">
+                </div>
+                <div class="form-group">
+                  <label for="backlight-color-g">G</label>
+                  <input type="number" id="backlight-color-g" class="form-control" min="0" max="255" step="1">
+                </div>
+                <div class="form-group">
+                  <label for="backlight-color-b">B</label>
+                  <input type="number" id="backlight-color-b" class="form-control" min="0" max="255" step="1">
+                </div>
+              </div>
+            </div>
+            <div class="color-popover-footer">
+              <button type="button" id="backlight-color-apply-live" class="btn btn-secondary backlight-color-footer-btn">Aperçu sur l’appareil</button>
+              <button type="button" id="backlight-color-close" class="btn btn-primary backlight-color-footer-btn">OK</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="backlight-brightness">Luminosité manuelle</label>
+        <div class="slider-row">
+          <input type="range" id="backlight-brightness" class="slider" min="0" max="100" value="50" step="1">
+          <span id="brightness-value" class="slider-value">50%</span>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="backlight-light-source">Source luminosité ambiante</label>
+        <select id="backlight-light-source" class="form-control">
+          <option value="atmega">ATmega (UART)</option>
+          <option value="esp32">ESP32 (ADC)</option>
+        </select>
+        <p class="form-hint">Choisis d’où provient la valeur ADC (sans re-téléverser le firmware).</p>
+      </div>
+
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="env-brightness">
+          <span>Selon l'environnement</span>
+        </label>
+        <p class="form-hint">Active le rétro-éclairage en faible luminosité (&lt;500) et le désactive en forte luminosité.</p>
+      </div>
+
+      <div class="light-display">
+        <div class="light-meter-wrapper">
+          <div class="light-meter-track">
+            <div id="light-level-bar" class="light-bar" style="width: 0%"></div>
+          </div>
+          <div class="light-meter-zones">
+            <span class="zone-dark">Sombre</span>
+            <span class="zone-mid">Modéré</span>
+            <span class="zone-bright">Clair</span>
+          </div>
+        </div>
+        <div class="light-stats">
+          <div class="light-stat">
+            <span class="light-stat-label">Valeur ADC</span>
+            <span id="light-level-raw" class="light-stat-value">0</span>
+            <span class="light-stat-unit">/ 1023</span>
+          </div>
+          <div class="light-stat">
+            <span class="light-stat-label">Lux (approx.)</span>
+            <span id="light-level-value" class="light-stat-value">0</span>
+          </div>
+          <div class="light-stat light-stat-status">
+            <span class="light-stat-label">LED</span>
+            <span id="light-led-status" class="light-stat-badge">—</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="backlight-section backlight-advanced">
+      <h3>Bande LED et animations</h3>
+      <p class="form-hint">Nombre total de pixels sur la ligne DATA (ex. 17 = pixel réservé + 16 touches). Ne pas dépasser le nombre réel de WS2812 sur la carte.</p>
+      <div class="form-group">
+        <label for="backlight-led-count">Nombre de LEDs (chaîne)</label>
+        <input type="number" id="backlight-led-count" class="form-control" min="1" max="48" value="17" step="1" />
+      </div>
+      <div class="form-group">
+        <label for="backlight-anim-mode">Animation</label>
+        <select id="backlight-anim-mode" class="form-control">
+          <option value="solid">Fixe (couleur uniforme)</option>
+          <option value="breathe">Respiration</option>
+          <option value="rainbow">Arc-en-ciel</option>
+          <option value="chase">Poursuite</option>
+          <option value="scanner">Scanner (va-et-vient)</option>
+          <option value="sparkle">Étincelles</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="backlight-anim-speed">Période / vitesse</label>
+        <div class="slider-row">
+          <input type="range" id="backlight-anim-speed" class="slider" min="200" max="12000" value="2500" step="100" />
+          <span id="backlight-anim-speed-value" class="slider-value">2500 ms</span>
+        </div>
+        <p class="form-hint">Durée d’un cycle (respiration, arc-en-ciel, scanner).</p>
+      </div>
+      <div class="form-group">
+        <label for="backlight-anim-length">Longueur de la traînée</label>
+        <div class="slider-row">
+          <input type="range" id="backlight-anim-length" class="slider" min="1" max="24" value="3" step="1" />
+          <span id="backlight-anim-length-value" class="slider-value">3</span>
+        </div>
+        <p class="form-hint">Largeur du segment lumineux pour poursuite et scanner.</p>
+      </div>
+    </section>
+
+    <!-- Section: Luminosité ambiante -->
+    <!-- (Les contrôles + niveaux sont regroupés dans "Contrôles") -->
+  </div>
+
+  <div class="backlight-actions">
+    <button id="apply-backlight-btn" class="btn btn-primary">
+      <i data-lucide="check" class="btn-icon"></i>
+      <span>Appliquer</span>
+    </button>
+  </div>
+</div>

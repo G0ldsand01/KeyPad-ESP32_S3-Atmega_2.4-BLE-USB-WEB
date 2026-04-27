@@ -42,30 +42,48 @@
 </div>
 
 <div
-  id="cart-added-overlay"
+  id="cart-added-toast"
+  class="cart-toast"
+  hidden
+  role="status"
+  aria-live="polite"
+  aria-atomic="true"
+>
+  <div class="cart-toast__panel">
+    <p id="cart-toast-summary" class="cart-toast__summary"></p>
+    <div class="cart-toast__actions">
+      <a href="/checkout/" class="btn-secondary btn-sm" id="cart-toast-open-panier">
+        Voir le panier
+      </a>
+      <a href="/checkout/" class="btn-primary btn-sm">Commander</a>
+      <button type="button" class="cart-toast__close" data-cart-toast-close aria-label="Fermer">
+        ✕
+      </button>
+    </div>
+  </div>
+</div>
+
+<div
+  id="cart-remove-overlay"
   class="cart-added-overlay"
   hidden
   role="dialog"
   aria-modal="true"
-  aria-labelledby="cart-overlay-title"
+  aria-labelledby="cart-remove-title"
 >
-  <button type="button" class="cart-added-overlay__backdrop" data-cart-overlay-close aria-label="Fermer"></button>
+  <button type="button" class="cart-added-overlay__backdrop" data-cart-remove-close aria-label="Fermer"></button>
   <div class="cart-added-overlay__panel" role="document">
-    <h2 id="cart-overlay-title" class="cart-added-overlay__title">Ajouté au panier</h2>
-    <p id="cart-overlay-summary" class="cart-added-overlay__summary"></p>
+    <h2 id="cart-remove-title" class="cart-added-overlay__title">Retirer du panier</h2>
+    <p id="cart-remove-summary" class="cart-added-overlay__summary">
+      Voulez-vous vraiment retirer cet article de votre panier ?
+    </p>
     <div class="cart-added-overlay__actions">
-      <button type="button" class="btn-secondary" data-cart-overlay-close>
-        Continuer
+      <button type="button" class="btn-secondary" data-cart-remove-close>
+        Annuler
       </button>
-      <button
-        type="button"
-        class="btn-secondary"
-        id="cart-overlay-open-panier"
-        data-cart-overlay-primary
-      >
-        Voir le panier
+      <button type="button" class="btn-primary" id="cart-remove-confirm" data-cart-remove-primary>
+        Retirer
       </button>
-      <a href="/checkout/" class="btn-primary cart-added-overlay__cta-checkout">Commander</a>
     </div>
   </div>
 </div>

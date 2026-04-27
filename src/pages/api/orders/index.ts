@@ -1,8 +1,6 @@
 import type { APIRoute } from 'astro';
 import { randomUUID } from 'node:crypto';
 import { getSession } from 'auth-astro/server';
-import { db } from '../../../db';
-import { orders } from '../../../db/schema';
 import { normalizeCartPayload, taxesFromSubtotalCents } from '../../../lib/orders';
 
 export const prerender = false;
@@ -49,21 +47,23 @@ export const POST: APIRoute = async ({ request }) => {
 
   const id = randomUUID();
 
-  await db.insert(orders).values({
-    id,
-    userId: session.user.id,
-    reference,
-    status: 'confirmed',
-    cartJson: JSON.stringify({ items: normalized.items, total: normalized.subtotalCents / 100 }),
-    shippingJson,
-    subtotalCents: normalized.subtotalCents,
-    tpsCents,
-    tvqCents,
-    totalCents,
-  });
+  // Mode sans DB (déploiement Vercel sans DATABASE_URL):
+  // on confirme la commande sans persistance.
 
-  return new Response(JSON.stringify({ ok: true, orderId: id, reference }), {
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      orderId: id,
+      reference,
+      subtotalCents: normalized.subtotalCents,
+      tpsCents,
+      tvqCents,
+      totalCents,
+      shippingJson,
+    }),
+    {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
-  });
+    }
+  );
 };

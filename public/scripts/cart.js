@@ -12,6 +12,7 @@ const PRODUCT = {
 };
 
 let cartAbort = null;
+let pendingRemoveId = null;
 
 function getCart() {
   try {
@@ -32,7 +33,7 @@ function addToCart(quantity = 1) {
   const cart = getCart();
   const existing = cart.items.find((i) => i.id === PRODUCT.id);
   if (existing) {
-    existing.quantity = Math.min(10, existing.quantity + quantity);
+    existing.quantity = existing.quantity + quantity;
   } else {
     cart.items.push({
       id: PRODUCT.id,
@@ -59,10 +60,39 @@ function setQuantity(quantity) {
   const cart = getCart();
   const item = cart.items.find((i) => i.id === PRODUCT.id);
   if (item) {
-    item.quantity = Math.max(1, Math.min(10, quantity));
+    item.quantity = Math.max(1, quantity);
     saveCart(cart);
     updateCartUI();
   }
+  return cart;
+}
+
+function setItemQuantityById(id, quantity) {
+  const cart = getCart();
+  const item = cart.items.find((i) => i.id === id);
+  if (!item) return cart;
+
+  const q = Math.max(0, quantity);
+  if (q === 0) {
+    showCartRemoveOverlay(id);
+    return cart;
+  }
+
+  item.quantity = q;
+  saveCart(cart);
+  updateCartUI();
+  return cart;
+}
+
+function removeItemById(id) {
+  const cart = getCart();
+  cart.items = cart.items.filter((i) => i.id !== id);
+  if (cart.items.length === 0) {
+    localStorage.removeItem(CART_KEY);
+  } else {
+    saveCart(cart);
+  }
+  updateCartUI();
   return cart;
 }
 
@@ -111,8 +141,32 @@ function renderCartPreview() {
         <h4>${item.name}</h4>
         <p>${item.tagline}</p>
         <div class="cart-preview-qty">
-          <span>Qté : ${item.quantity}</span>
+          <div class="cart-preview-qty-controls" aria-label="Quantité">
+            <button type="button" class="cart-qty-btn" data-cart-qty-minus="${item.id}" aria-label="Diminuer la quantité">−</button>
+            <input
+              type="number"
+              class="cart-qty-input"
+              inputmode="numeric"
+              min="0"
+              value="${item.quantity}"
+              aria-label="Quantité"
+              data-cart-qty-input="${item.id}"
+            />
+            <button type="button" class="cart-qty-btn" data-cart-qty-plus="${item.id}" aria-label="Augmenter la quantité">+</button>
+          </div>
           <span class="cart-preview-price">${(item.price * item.quantity).toFixed(2)} $</span>
+        </div>
+        <div class="cart-preview-actions">
+          <button type="button" class="btn-danger btn-sm" data-cart-remove="${item.id}" aria-label="Retirer du panier">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18"/>
+              <path d="M8 6V4h8v2"/>
+              <path d="M6 6l1 16h10l1-16"/>
+              <path d="M10 11v6"/>
+              <path d="M14 11v6"/>
+            </svg>
+            Retirer
+          </button>
         </div>
       </div>
     </div>
@@ -128,18 +182,69 @@ function renderCartPreview() {
 function updateCartUI() {
   updateCartBadge();
   renderCartPreview();
+  document.dispatchEvent(new CustomEvent('flexpad:cart-updated'));
 }
 
-function hideCartAddedOverlay() {
-  const overlay = document.getElementById('cart-added-overlay');
+let toastTimer = null;
+
+function hideCartAddedToast() {
+  const toast = document.getElementById('cart-added-toast');
+  if (!toast || toast.hidden) return;
+  toast.classList.remove('is-entering');
+  toast.classList.add('is-leaving');
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+  }
+
+  const done = () => {
+    toast.hidden = true;
+    toast.classList.remove('is-leaving');
+    toast.removeEventListener('animationend', done);
+  };
+
+  // Si l’animation est désactivée, on cache immédiatement.
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  if (reduce) {
+    done();
+    return;
+  }
+
+  toast.addEventListener('animationend', done);
+  // fallback si l’événement ne part pas
+  setTimeout(done, 260);
+}
+
+function hideCartRemoveOverlay() {
+  const overlay = document.getElementById('cart-remove-overlay');
   if (overlay) overlay.hidden = true;
   document.documentElement.classList.remove('cart-overlay-open');
+  pendingRemoveId = null;
+}
+
+function showCartRemoveOverlay(itemId) {
+  const overlay = document.getElementById('cart-remove-overlay');
+  const summary = document.getElementById('cart-remove-summary');
+  if (!overlay) return;
+
+  pendingRemoveId = itemId;
+
+  const cart = getCart();
+  const item = cart.items.find((i) => i.id === itemId);
+  if (summary && item) {
+    summary.textContent = `Voulez-vous vraiment retirer « ${item.name} » de votre panier ?`;
+  }
+
+  overlay.hidden = false;
+  document.documentElement.classList.add('cart-overlay-open');
+  const focusEl = overlay.querySelector('[data-cart-remove-primary]');
+  if (focusEl instanceof HTMLElement) focusEl.focus();
 }
 
 function showCartAddedOverlay(qtyJustAdded) {
-  const overlay = document.getElementById('cart-added-overlay');
-  const summary = document.getElementById('cart-overlay-summary');
-  if (!overlay || !summary) return;
+  const toast = document.getElementById('cart-added-toast');
+  const summary = document.getElementById('cart-toast-summary');
+  if (!toast || !summary) return;
 
   const cart = getCart();
   const item = cart.items.find((i) => i.id === PRODUCT.id);
@@ -149,11 +254,14 @@ function showCartAddedOverlay(qtyJustAdded) {
     : `Article ajouté. Quantité dans le panier : ${q}.`;
   summary.textContent = `${line} Sous-total : ${cart.total.toFixed(2)} $ CAD.`;
 
-  overlay.hidden = false;
-  document.documentElement.classList.add('cart-overlay-open');
-
-  const focusEl = overlay.querySelector('[data-cart-overlay-primary]');
-  if (focusEl instanceof HTMLElement) focusEl.focus();
+  toast.hidden = false;
+  toast.classList.remove('is-entering');
+  // relance l’animation à chaque ajout
+  // eslint-disable-next-line no-unused-expressions
+  toast.offsetHeight;
+  toast.classList.add('is-entering');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => hideCartAddedToast(), 2500);
 }
 
 function openCartDropdown() {
@@ -169,6 +277,8 @@ window.FlexPadCart = {
   addToCart,
   removeFromCart,
   setQuantity,
+  setItemQuantityById,
+  showRemoveOverlay: showCartRemoveOverlay,
   getCart,
   updateCartBadge,
   updateCartUI,
@@ -179,6 +289,14 @@ function bindCartDropdown(signal) {
   const trigger = document.getElementById('cart-trigger');
   const dropdown = document.getElementById('cart-dropdown');
   if (!trigger || !dropdown) return;
+
+  // IMPORTANT: on re-render les items après un clic (qty +/-),
+  // donc le "click outside" peut croire que le clic était dehors.
+  dropdown.addEventListener(
+    'click',
+    (e) => e.stopPropagation(),
+    { signal }
+  );
 
   const close = () => {
     dropdown.classList.remove('cart-dropdown--open');
@@ -210,11 +328,8 @@ function bindCartDropdown(signal) {
     'keydown',
     (e) => {
       if (e.key === 'Escape') {
-        const ov = document.getElementById('cart-added-overlay');
-        if (ov && !ov.hidden) {
-          hideCartAddedOverlay();
-          return;
-        }
+        const t = document.getElementById('cart-added-toast');
+        if (t && !t.hidden) hideCartAddedToast();
         close();
       }
     },
@@ -222,24 +337,30 @@ function bindCartDropdown(signal) {
   );
 }
 
-function bindCartOverlay(signal) {
-  const overlay = document.getElementById('cart-added-overlay');
+function bindCartToast(signal) {
+  const toast = document.getElementById('cart-added-toast');
+  if (!toast) return;
+
+  toast.querySelectorAll('[data-cart-toast-close]').forEach((el) => {
+    el.addEventListener('click', () => hideCartAddedToast(), { signal });
+  });
+  // "Voir le panier" est un lien vers /checkout/
+}
+
+function bindRemoveOverlay(signal) {
+  const overlay = document.getElementById('cart-remove-overlay');
   if (!overlay) return;
 
-  overlay.querySelectorAll('[data-cart-overlay-close]').forEach((el) => {
-    el.addEventListener(
-      'click',
-      () => hideCartAddedOverlay(),
-      { signal }
-    );
+  overlay.querySelectorAll('[data-cart-remove-close]').forEach((el) => {
+    el.addEventListener('click', () => hideCartRemoveOverlay(), { signal });
   });
 
-  const openPanier = document.getElementById('cart-overlay-open-panier');
-  openPanier?.addEventListener(
+  const confirmBtn = document.getElementById('cart-remove-confirm');
+  confirmBtn?.addEventListener(
     'click',
     () => {
-      hideCartAddedOverlay();
-      openCartDropdown();
+      if (pendingRemoveId) removeItemById(pendingRemoveId);
+      hideCartRemoveOverlay();
     },
     { signal }
   );
@@ -269,6 +390,67 @@ function bindAddToCartButtons(signal) {
   });
 }
 
+function bindRemoveFromCartButtons(signal) {
+  const itemsEl = document.getElementById('cart-items');
+  if (!itemsEl) return;
+
+  itemsEl.addEventListener(
+    'click',
+    (e) => {
+      const t = e.target;
+      if (!(t instanceof HTMLElement)) return;
+
+      const minus = t.closest('[data-cart-qty-minus]');
+      if (minus instanceof HTMLElement) {
+        const id = minus.getAttribute('data-cart-qty-minus');
+        if (!id) return;
+        const cart = getCart();
+        const item = cart.items.find((i) => i.id === id);
+        if (!item) return;
+        setItemQuantityById(id, item.quantity - 1);
+        return;
+      }
+
+      const plus = t.closest('[data-cart-qty-plus]');
+      if (plus instanceof HTMLElement) {
+        const id = plus.getAttribute('data-cart-qty-plus');
+        if (!id) return;
+        const cart = getCart();
+        const item = cart.items.find((i) => i.id === id);
+        if (!item) return;
+        setItemQuantityById(id, item.quantity + 1);
+        return;
+      }
+
+      const btn = t.closest('[data-cart-remove]');
+      if (!(btn instanceof HTMLElement)) return;
+      const id = btn.getAttribute('data-cart-remove');
+      if (!id) return;
+      showCartRemoveOverlay(id);
+    },
+    { signal }
+  );
+}
+
+function bindQuantityInputs(signal) {
+  const itemsEl = document.getElementById('cart-items');
+  if (!itemsEl) return;
+
+  itemsEl.addEventListener(
+    'change',
+    (e) => {
+      const t = e.target;
+      if (!(t instanceof HTMLInputElement)) return;
+      const id = t.getAttribute('data-cart-qty-input');
+      if (!id) return;
+      const raw = parseInt(t.value || '0', 10);
+      const q = Number.isFinite(raw) ? raw : 0;
+      setItemQuantityById(id, q);
+    },
+    { signal }
+  );
+}
+
 function initCart() {
   if (!document.getElementById('flexpad-cart-widget')) return;
   if (cartAbort) cartAbort.abort();
@@ -276,8 +458,11 @@ function initCart() {
   const { signal } = cartAbort;
 
   bindCartDropdown(signal);
-  bindCartOverlay(signal);
+  bindCartToast(signal);
+  bindRemoveOverlay(signal);
   bindAddToCartButtons(signal);
+  bindRemoveFromCartButtons(signal);
+  bindQuantityInputs(signal);
   updateCartUI();
 }
 

@@ -48,6 +48,7 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 // IMPORTANT: L'ATmega en 5V envoie 5V sur PD1. L'ESP32 n'est PAS 5V tolerant!
 // Diviseur requis: PD1 -> 2k2 -> [jonction vers ESP32 RX] -> 3k3 -> GND  (≈3V)
 // GPIO 43/44 = terminal USB (ne pas utiliser pour ATmega)
+#define ENABLE_ATMEGA_UART 1
 #define ATMEGA_UART_TX 10
 #define ATMEGA_UART_RX 11
 #define ATMEGA_UART_BAUD 9600
@@ -67,18 +68,16 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 // Strip NeoPixel / SK6812 (rétroéclairage RVB) — GPIO 48 sur carte finale
 #define ENABLE_LED_STRIP 1
 #define LED_STRIP_PIN 48
-// Nombre de LEDs sur la chaîne DES TOUCHES.
-// Si ta carte a aussi une LED RGB intégrée sur la même pin, elle est souvent câblée "en parallèle"
-// (pas en série): dans ce cas elle reçoit exactement le pixel 0 et on ne peut pas l'éteindre
-// sans aussi éteindre la touche 0. Si au contraire elle est "en série" avant les touches,
-// mets LED_STRIP_FIRST_PIXEL_RESERVED à 1 pour réserver le pixel 0 à la LED intégrée.
-#define LED_STRIP_COUNT 17
-// 0 = les touches commencent au pixel 0 (recommandé si ta touche 0 est pixel0)
-// 1 = le pixel 0 est réservé (LED intégrée en série), les touches commencent au pixel 1
+// Buffer NeoPixel max (nombre de pixels alloués). La longueur réelle est réglable via NVS / Web (≤ max).
+// Nécessite Adafruit NeoPixel avec updateLength() (versions récentes de la librairie).
+// LED_STRIP_DEFAULT_ACTIVE = longueur par défaut au premier boot (ex. 17 = 1 module + 16 touches).
+// LED_STRIP_FIRST_PIXEL_RESERVED = 1 : pixel 0 toujours éteint (LED module), touches à partir de l’index 1.
+#define LED_STRIP_MAX 48
+#define LED_STRIP_DEFAULT_ACTIVE 17
 #define LED_STRIP_FIRST_PIXEL_RESERVED 0
 // LED blanche PWM séparée (si câblée). -1 = désactivé.
 #define LED_PWM_PIN 45
-
+#define ESP32_LIGHT_ADC_PIN 2
 // ─── Keymap par défaut (grille physique) ────────────────────────────────────
 // [PROFILE] [/] [*] [-]
 // [7] [8] [9] [+]
@@ -134,6 +133,32 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 // ─── Display update ─────────────────────────────────────────────────────────
 #define DISPLAY_UPDATE_INTERVAL_MS 1000
 
+// ─── Affichage ST7789 piloté par l'ESP32 (bypass ATmega) ─────────────────────
+// Si tu câbles l'écran directement sur l'ESP32, active le bypass dans l'UI.
+// Pins demandées: GPIO42=DIN(MOSI), GPIO41=CLK(SCK), GPIO30=CS, GPIO39=DC, GPIO38=RST
+// NOTE: nécessite une lib ST7789 côté Arduino (ex: Adafruit_ST7789 + Adafruit_GFX).
+#define USE_ESP32_DISPLAY_ST7789 0
+#define ESP32_TFT_MOSI 42
+#define ESP32_TFT_SCK  41
+#define ESP32_TFT_CS   37  // Mettre -1 si CS est câblé à GND
+#define ESP32_TFT_DC   39
+#define ESP32_TFT_RST  38
+// Backlight (BLK) si câblée sur une pin ESP32. -1 = non utilisée (BLK reliée à 3V3 ou gérée ailleurs).
+#define ESP32_TFT_BL   36
+// 1 si BL est active-low (écran allumé quand BL=LOW)
+#define ESP32_TFT_BL_INVERT 0
+// Test écran au boot (debug SPI/câblage). 1 = splash test même si bypass OFF.
+#define ESP32_TFT_BOOT_TEST 0
+// Test matériel bas niveau (pins + SPI) pour debug: backlight PWM, reset, toggle CS/DC.
+#define ESP32_TFT_HW_PIN_TEST 0
+// Test ST7789 manuel (sans librairie): envoie init + remplissage RAM.
+// Utile si la backlight est OK mais aucun pixel ne s'affiche.
+#define ESP32_TFT_MANUAL_ST7789_TEST 0
+// Mettre 1 si CS est relié à GND (ou non câblé): on ne togglera pas CS.
+#define ESP32_TFT_CS_GND 0
+// SPI mode à essayer si rien ne s'affiche (0 ou 3).
+#define ESP32_TFT_SPI_MODE 0
+
 // ─── Alimentation batterie (BLE) ─────────────────────────────────────────────
 // Si BLE n'est pas visible avec batterie 3.7V: la radio BLE consomme ~80-100 mA en TX.
 // Vérifier: (1) Tension stable 3.0-3.6V sur ESP32 (LDO si batterie 4.2V max)
@@ -144,7 +169,17 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define LIGHT_POLL_INTERVAL_MS 30000   // USB: mise à jour toutes les 30 s
 #define LIGHT_POLL_INTERVAL_BLE_MS 60000  // BLE: toutes les 60 s (pour LED)
 #define LIGHT_POLL_MIN_INTERVAL_MS 30000  // Throttle: min 30s entre 2 CMD_READ_LIGHT
-#define LIGHT_THRESHOLD 500  // < 500 = sombre (LED ON). Si capteur inversé (haut=sombre): utiliser >= pour ON
+#define LIGHT_THRESHOLD 550  // < 500 = sombre (LED ON). Si capteur inversé (haut=sombre): utiliser >= pour ON
 #define LIGHT_SENSOR_INVERTED 0  // 0 = ADC >= 500 = clair (LED OFF). ADC < 500 = sombre (LED ON)
+
+// ─── Capteur luminosité sur ESP32 (ADC) ─────────────────────────────────────
+// 1 = lire la luminosité directement via une pin ADC ESP32, au lieu de CMD_READ_LIGHT (ATmega).
+// La valeur est normalisée sur 0..1023 pour rester compatible avec le reste du code (LIGHT_THRESHOLD).
+#define USE_ESP32_LIGHT_SENSOR 1
+// Choisis une pin ADC valide pour ton ESP32-S3 (ex: GPIO1/2/14/15 selon ta carte).
+// IMPORTANT: évite les pins utilisées par USB, UART, matrice, etc.
+#define ESP32_LIGHT_ADC_PIN 2
+// Résolution ADC utilisée pour la normalisation. Sur ESP32 Arduino, analogRead retourne souvent 0..4095.
+#define ESP32_LIGHT_ADC_MAX 4095
 
 #endif // CONFIG_H

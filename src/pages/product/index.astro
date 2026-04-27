@@ -80,13 +80,18 @@ import Layout from '../../layouts/Layout.astro';
         <div class="product-actions reveal reveal-delay-3">
           <div class="product-add-to-cart">
             <label for="product-quantity">Quantité :</label>
-            <input type="number" id="product-quantity" min="1" max="10" value="1" />
+            <input type="number" id="product-quantity" min="1" value="1" />
             <button type="button" class="btn-primary btn-large" id="btn-add-to-cart">Ajouter au panier</button>
-            <button type="button" class="btn-secondary btn-large" id="btn-add-wishlist" title="Enregistrer dans la liste de souhaits (navigateur)">
-              ♡ Liste de souhaits
+            <button
+              type="button"
+              class="btn-secondary btn-large"
+              id="btn-add-wishlist"
+              title="Enregistrer dans la liste de souhaits (navigateur)"
+              aria-label="Ajouter à la liste de souhaits"
+            >
+              ♡
             </button>
           </div>
-          <a href="/contact/" class="btn-secondary">Nous contacter</a>
         </div>
       </div>
     </main>
@@ -108,27 +113,27 @@ import Layout from '../../layouts/Layout.astro';
       <h2 class="reveal">Pourquoi choisir FlexPad ?</h2>
       <div class="features-grid">
         <div class="feature-card reveal">
-          <div class="feature-icon">⌨️</div>
-          <h4>Personnalisation poussée</h4>
+          <div class="feature-icon">⚡</div>
+          <h4>Du temps récupéré, tous les jours</h4>
           <p>
-            Macros multi-frappes, touches média et modificateurs — chaque emplacement est éditable dans
-            l’interface, avec aperçu du libellé affiché sur la touche.
+            Un seul geste pour lancer vos actions fréquentes (copier/formatter, mute, scènes, scripts). Le
+            but: moins de navigation, plus de flow — surtout quand vous répétez les mêmes séquences 50× par jour.
           </p>
         </div>
         <div class="feature-card reveal reveal-delay-1">
-          <div class="feature-icon">🎨</div>
-          <h4>Rétroéclairage intelligent</h4>
+          <div class="feature-icon">🧠</div>
+          <h4>Profils qui s’adaptent à votre contexte</h4>
           <p>
-            Réglage fin de la luminosité ou mode automatique grâce au capteur ambiant, pour travailler
-            tard le soir sans éblouissement.
+            Travail, montage, gaming, streaming: changez de profil et tout suit. Les profils sont stockés sur
+            l’appareil — vous gardez votre setup même en changeant d’ordi.
           </p>
         </div>
         <div class="feature-card reveal reveal-delay-2">
-          <div class="feature-icon">📱</div>
-          <h4>Zéro application obligatoire</h4>
+          <div class="feature-icon">🌐</div>
+          <h4>Setup simple (pas d’app à installer)</h4>
           <p>
-            Ouvrez <a href="/config/">la page de configuration</a> dans Chrome ou Edge récent : connexion
-            directe à l’USB ou au BLE, export JSON inclus.
+            Configurez directement dans le navigateur via <a href="/config/">l’interface web</a> (USB ou Bluetooth).
+            Export/import JSON inclus pour cloner votre config ou faire un backup en 10 secondes.
           </p>
         </div>
       </div>
