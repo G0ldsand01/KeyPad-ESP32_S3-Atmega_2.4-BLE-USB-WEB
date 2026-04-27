@@ -9,13 +9,14 @@ export const prerender = false;
 const session = await getSession(Astro.request);
 if (!session?.user || session.user.role !== 'admin') return Astro.redirect('/dashboard');
 
-const allUsers = await db.select().from(users);
+const dbEnabled = Boolean(import.meta.env.DATABASE_URL);
+const allUsers = dbEnabled ? await db.select().from(users) : [];
 const title = 'Admin — Utilisateurs | FlexPad';
 ---
 
 <Layout {title} site>
   <div class="page-content dashboard-page dashboard-page--chrome">
-    <DashboardChrome variant="admin" title="Utilisateurs" subtitle="Comptes enregistrés (Auth + base locale)." userName={session.user.name ?? session.user.email ?? 'Admin'} userEmail={session.user.email ?? ''} isAdmin={true}>
+    <DashboardChrome variant="admin" title="Utilisateurs" subtitle={dbEnabled ? "Comptes enregistrés (Auth + base locale)." : "Base désactivée (démo Vercel) — liste indisponible."} userName={session.user.name ?? session.user.email ?? 'Admin'} userEmail={session.user.email ?? ''} isAdmin={true}>
       <div class="dashboard-card reveal visible">
         <h2 class="dashboard-card__title">Liste ({allUsers.length})</h2>
         <div class="admin-users-table-wrap">

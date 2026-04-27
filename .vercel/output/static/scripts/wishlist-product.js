@@ -20,21 +20,34 @@ function writeList(items) {
 function initWishlistBtn() {
   const btn = document.getElementById('btn-add-wishlist');
   if (!btn) return;
+  if (btn.dataset.wishlistBound === '1') return;
+  btn.dataset.wishlistBound = '1';
+
+  const render = () => {
+    const list = readList();
+    const exists = list.some((x) => x && x.id === 'flexpad');
+    btn.classList.toggle('is-active', exists);
+    btn.textContent = exists ? '♥' : '♡';
+    btn.setAttribute('aria-label', exists ? 'Retirer de la liste de souhaits' : 'Ajouter à la liste de souhaits');
+    btn.setAttribute('title', exists ? 'Retirer de la liste de souhaits (navigateur)' : 'Enregistrer dans la liste de souhaits (navigateur)');
+  };
+
+  render();
+
   btn.addEventListener('click', () => {
-    const entry = {
-      id: 'flexpad',
-      name: 'FlexPad',
-      addedAt: new Date().toISOString(),
-    };
-    const list = readList().filter((x) => x.id !== 'flexpad');
-    list.push(entry);
-    writeList(list);
-    btn.textContent = '✓ Dans la liste';
-    btn.disabled = true;
-    setTimeout(() => {
-      btn.textContent = '♡ Liste de souhaits';
-      btn.disabled = false;
-    }, 2000);
+    const list = readList();
+    const exists = list.some((x) => x && x.id === 'flexpad');
+    if (exists) {
+      writeList(list.filter((x) => x && x.id !== 'flexpad'));
+    } else {
+      const entry = {
+        id: 'flexpad',
+        name: 'FlexPad',
+        addedAt: new Date().toISOString(),
+      };
+      writeList(list.filter((x) => x && x.id !== 'flexpad').concat(entry));
+    }
+    render();
   });
 }
 

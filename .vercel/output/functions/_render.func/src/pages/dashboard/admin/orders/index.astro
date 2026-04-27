@@ -15,15 +15,18 @@ if (!session?.user || session.user.role !== 'admin') {
   return Astro.redirect('/dashboard');
 }
 
-const rows = await db
-  .select({
-    order: orders,
-    customerEmail: users.email,
-    customerName: users.name,
-  })
-  .from(orders)
-  .leftJoin(users, eq(orders.userId, users.id))
-  .orderBy(desc(orders.createdAt));
+const dbEnabled = Boolean(import.meta.env.DATABASE_URL);
+const rows = dbEnabled
+  ? await db
+      .select({
+        order: orders,
+        customerEmail: users.email,
+        customerName: users.name,
+      })
+      .from(orders)
+      .leftJoin(users, eq(orders.userId, users.id))
+      .orderBy(desc(orders.createdAt))
+  : [];
 
 function parseItems(json: string): CartLine[] {
   try {
@@ -42,7 +45,7 @@ const title = 'Admin — Commandes | FlexPad';
     <DashboardChrome
       variant="admin"
       title="Gestion des commandes"
-      subtitle="Modifier le statut met à jour la base locale."
+      subtitle={dbEnabled ? "Modifier le statut met à jour la base locale." : "Base désactivée (démo Vercel) — commandes non disponibles."}
       userName={session.user.name ?? session.user.email ?? 'Admin'}
       userEmail={session.user.email ?? ''}
       isAdmin={true}

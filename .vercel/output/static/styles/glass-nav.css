@@ -1,6 +1,9 @@
 /* Barre de navigation flottante — effet verre, toutes les pages */
 
 :root {
+  /* Aligné sur .site-header-actions (main.css) : même retrait que à droite */
+  --site-nav-edge: max(1rem, env(safe-area-inset-left));
+  --site-nav-edge-right: max(1rem, env(safe-area-inset-right));
   --nav-dock-offset: 5.25rem;
   --nav-glass-bg: rgba(15, 23, 42, 0.45);
   --nav-glass-bg-strong: rgba(15, 23, 42, 0.65);
@@ -39,12 +42,16 @@ body:has(.main-page) {
   padding-top: 0 !important;
 }
 
+.glass-nav-mount {
+  position: static;
+}
+
 .glass-nav-dock {
   position: fixed;
   top: 1rem;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 1100;
+  z-index: 2100;
   max-width: min(96vw, 52rem);
   animation: glassNavIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
@@ -57,6 +64,17 @@ body:has(.main-page) {
   to {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes glassNavInFromLeft {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -77,6 +95,80 @@ body:has(.main-page) {
   -webkit-backdrop-filter: blur(16px) saturate(1.35);
   border: 1px solid var(--nav-glass-border);
   box-shadow: var(--nav-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  position: relative;
+}
+
+/* Bouton menu (masqué sur grand écran) */
+.glass-nav__toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--nav-link);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s ease;
+}
+
+.glass-nav__toggle:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+[data-theme='light'] .glass-nav__toggle {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme='light'] .glass-nav__toggle:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.glass-nav__toggle-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 18px;
+}
+
+.glass-nav__toggle-bars span {
+  display: block;
+  height: 2px;
+  background: var(--nav-link-active);
+  border-radius: 1px;
+  transition:
+    transform 0.25s ease,
+    opacity 0.2s ease;
+}
+
+.glass-nav-mount--open .glass-nav__toggle-bars span:nth-child(1) {
+  transform: translateY(7px) rotate(45deg);
+}
+
+.glass-nav-mount--open .glass-nav__toggle-bars span:nth-child(2) {
+  opacity: 0;
+}
+
+.glass-nav-mount--open .glass-nav__toggle-bars span:nth-child(3) {
+  transform: translateY(-7px) rotate(-45deg);
+}
+
+.glass-nav__backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 2095;
+  background: rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+.glass-nav-mount--open .glass-nav__backdrop {
+  display: block;
 }
 
 .glass-nav__inner {
@@ -132,19 +224,108 @@ body:has(.main-page) {
   box-shadow: inset 0 0 0 1px rgba(9, 105, 218, 0.25);
 }
 
-@media (max-width: 480px) {
+/* Grand écran : liens en ligne, pas de menu hamburger */
+@media (min-width: 1025px) {
+  .glass-nav__toggle {
+    display: none !important;
+  }
+
+  .glass-nav__panel {
+    display: contents;
+  }
+
+  .glass-nav__backdrop {
+    display: none !important;
+    pointer-events: none;
+  }
+}
+
+/* Tablette / mobile tôt : hamburger + panneau (rupture avant 1024px) */
+@media (max-width: 1024px) {
+  body.glass-nav-menu-open {
+    overflow: hidden;
+  }
+
+  /* Quand le menu mobile est ouvert, masquer le dock auth/panier à droite */
+  body.glass-nav-menu-open .site-header-actions {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* À gauche, même retrait que panier + connexion à droite (1rem / safe-area) */
+  .glass-nav-dock {
+    left: var(--site-nav-edge);
+    transform: none;
+    right: auto;
+    width: max-content;
+    max-width: calc(
+      100vw - var(--site-nav-edge) - var(--site-nav-edge-right) - 7.25rem
+    );
+    animation: glassNavInFromLeft 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
   .glass-nav {
-    padding: 0.45rem 0.85rem;
+    width: auto;
+    justify-content: flex-start;
+    padding: 0.4rem 0.55rem;
+    border-radius: 16px;
+  }
+
+  .glass-nav__toggle {
+    display: inline-flex;
+  }
+
+  .glass-nav__panel {
+    display: none;
+    position: absolute;
+    top: calc(100% + 0.45rem);
+    left: 0;
+    transform: none;
+    box-sizing: border-box;
+    width: min(22rem, calc(100vw - var(--site-nav-edge) - var(--site-nav-edge-right) - 7.25rem));
+    padding: 0.45rem;
+    border-radius: 16px;
+    background: linear-gradient(
+      135deg,
+      var(--nav-glass-bg-strong) 0%,
+      var(--nav-glass-bg) 100%
+    );
+    -webkit-backdrop-filter: blur(16px) saturate(1.35);
+    backdrop-filter: blur(16px) saturate(1.35);
+    border: 1px solid var(--nav-glass-border);
+    box-shadow: var(--nav-shadow);
+    z-index: 2110;
+  }
+
+  .glass-nav-mount--open .glass-nav__panel {
+    display: block;
+  }
+
+  .glass-nav__inner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.2rem;
+    overflow-x: visible;
+    overflow-y: auto;
+    max-height: min(70vh, 26rem);
+    padding: 0.15rem;
   }
 
   .glass-nav__link {
-    padding: 0.45rem 0.7rem;
-    font-size: 0.8125rem;
+    width: 100%;
+    text-align: left;
+    white-space: normal;
+    padding: 0.65rem 0.85rem;
+    font-size: 0.875rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .glass-nav-dock {
-    animation: none;
+    animation: none !important;
+  }
+
+  .glass-nav__toggle-bars span {
+    transition: none;
   }
 }

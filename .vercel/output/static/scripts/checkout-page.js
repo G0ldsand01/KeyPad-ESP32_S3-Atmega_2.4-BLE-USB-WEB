@@ -19,8 +19,10 @@ function getCart() {
 function saveCartQty(qty) {
   const cart = getCart();
   const item = cart.items.find((i) => i.id === 'flexpad');
-  if (item) {
-    item.quantity = Math.max(1, Math.min(10, qty));
+  if (qty <= 0) {
+    cart.items = cart.items.filter((i) => i.id !== 'flexpad');
+  } else if (item) {
+    item.quantity = Math.max(1, qty);
   } else {
     cart.items.push({
       id: 'flexpad',
@@ -31,7 +33,11 @@ function saveCartQty(qty) {
     });
   }
   cart.total = cart.items.reduce((s, i) => s + i.price * i.quantity, 0);
-  localStorage.setItem(CART_KEY, JSON.stringify(cart));
+  if (cart.items.length === 0) {
+    localStorage.removeItem(CART_KEY);
+  } else {
+    localStorage.setItem(CART_KEY, JSON.stringify(cart));
+  }
   if (typeof window.updateCartBadge === 'function') window.updateCartBadge();
   if (window.FlexPadCart?.updateCartUI) window.FlexPadCart.updateCartUI();
 }
@@ -73,6 +79,8 @@ function initCheckoutPage() {
   const grandEl = document.getElementById('checkout-grand-total');
   const cartEmptyMsg = document.getElementById('cart-empty-msg');
   const cartContent = document.getElementById('checkout-cart-content');
+  const removeBtn = document.getElementById('btn-remove-from-checkout');
+  const btnToStep2 = document.getElementById('btn-to-step2');
 
   const cart = getCart();
   const flexpadItem = cart.items.find((i) => i.id === 'flexpad');
@@ -81,13 +89,45 @@ function initCheckoutPage() {
   if (cart.items.length === 0 && cartEmptyMsg && cartContent) {
     cartContent.hidden = true;
     cartEmptyMsg.hidden = false;
+    if (btnToStep2 instanceof HTMLButtonElement) btnToStep2.disabled = true;
   } else if (quantityInput) {
     quantityInput.value = String(initialQty);
   }
 
-  function updateTotal() {
-    const qty = Math.max(1, Math.min(10, parseInt(quantityInput?.value || '1', 10)));
-    if (quantityInput && String(qty) !== quantityInput.value) quantityInput.value = String(qty);
+  function syncEmptyState() {
+    const cart = getCart();
+    const empty = cart.items.length === 0;
+    if (cartEmptyMsg && cartContent) {
+      cartContent.hidden = empty;
+      cartEmptyMsg.hidden = !empty;
+    }
+    if (btnToStep2 instanceof HTMLButtonElement) {
+      btnToStep2.disabled = empty;
+    }
+  }
+
+  function syncFromCart() {
+    const cart = getCart();
+    const item = cart.items.find((i) => i.id === 'flexpad');
+    if (!item) {
+      syncEmptyState();
+      return;
+    }
+
+    // Ne pas écraser la saisie en cours.
+    const active = document.activeElement;
+    const isEditingQty = quantityInput && active === quantityInput;
+    if (quantityInput && !isEditingQty) {
+      quantityInput.value = String(item.quantity);
+    }
+
+    updateTotal(item.quantity);
+    syncEmptyState();
+  }
+
+  function updateTotal(qtyOverride) {
+    const raw = qtyOverride ?? parseInt(quantityInput?.value || '1', 10);
+    const qty = Math.max(1, Number.isFinite(raw) ? raw : 1);
     const subtotal = unitPrice * qty;
     const tps = subtotal * 0.05;
     const tvq = subtotal * 0.09975;
@@ -109,8 +149,30 @@ function initCheckoutPage() {
     });
   }
 
-  quantityInput?.addEventListener('input', updateTotal, { signal });
-  quantityInput?.addEventListener('change', updateTotal, { signal });
+  quantityInput?.addEventListener(
+    'input',
+    () => {
+      // Laisser l'utilisateur vider temporairement le champ sans forcer "1"
+      if (!quantityInput) return;
+      if (quantityInput.value === '') return;
+      const raw = parseInt(quantityInput.value, 10);
+      const qty = Number.isFinite(raw) ? Math.max(1, raw) : 1;
+      updateTotal(qty);
+    },
+    { signal }
+  );
+
+  quantityInput?.addEventListener(
+    'change',
+    () => {
+      if (!quantityInput) return;
+      const raw = parseInt(quantityInput.value || '1', 10);
+      const qty = Number.isFinite(raw) ? Math.max(1, raw) : 1;
+      quantityInput.value = String(qty);
+      updateTotal(qty);
+    },
+    { signal }
+  );
 
   document.getElementById('btn-to-step2')?.addEventListener(
     'click',
@@ -120,6 +182,17 @@ function initCheckoutPage() {
     },
     { signal }
   );
+
+  removeBtn?.addEventListener(
+    'click',
+    () => {
+      // Utiliser le même modal que le popover
+      window.FlexPadCart?.showRemoveOverlay?.('flexpad');
+    },
+    { signal }
+  );
+
+  document.addEventListener('flexpad:cart-updated', syncFromCart, { signal });
 
   document.getElementById('btn-back-step2')?.addEventListener('click', () => showStep(1), { signal });
 
@@ -181,6 +254,19 @@ function initCheckoutPage() {
         console.warn('[checkout] enregistrement commande', err);
       }
       if (orderRefEl) orderRefEl.textContent = displayRef;
+      const detailsWrap = document.getElementById('checkout-confirmation-details');
+      const detailsText = document.getElementById('checkout-confirmation-contact');
+      if (detailsWrap && detailsText) {
+        const lines = [
+          shipping.name && `Nom : ${shipping.name}`,
+          shipping.email && `Courriel : ${shipping.email}`,
+          shipping.phone && `Téléphone : ${shipping.phone}`,
+          (shipping.address || shipping.city || shipping.postal) &&
+            `Adresse : ${[shipping.address, shipping.city, shipping.postal].filter(Boolean).join(', ')}`,
+        ].filter(Boolean);
+        detailsText.textContent = lines.join(' • ');
+        detailsWrap.hidden = lines.length === 0;
+      }
       clearCart();
       showStep(3);
     },
@@ -188,6 +274,7 @@ function initCheckoutPage() {
   );
 
   if (cart.items.length > 0) updateTotal();
+  syncEmptyState();
 }
 
 document.addEventListener('astro:page-load', initCheckoutPage);

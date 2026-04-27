@@ -4,15 +4,26 @@ import Layout from '../layouts/Layout.astro';
 export const prerender = false;
 
 const callbackUrl = Astro.url.searchParams.get('callbackUrl') ?? '/dashboard';
+const mode = Astro.url.searchParams.get('mode') ?? 'login';
 const title = 'Connexion | FlexPad';
 ---
 
 <Layout {title} site>
   <div class="page-content auth-page">
     <main class="content-section auth-page__main">
-      <h1 class="page-title">Connexion</h1>
-      <p class="page-lead">Accédez à votre tableau de bord FlexPad.</p>
+      <h1 class="page-title">Compte FlexPad</h1>
+      <p class="page-lead">Connexion ou inscription pour accéder au tableau de bord.</p>
 
+      <div class="auth-switch" role="tablist" aria-label="Connexion ou inscription">
+        <button type="button" class="auth-switch__tab" id="tab-login" role="tab" aria-controls="panel-login" aria-selected="true">
+          Connexion
+        </button>
+        <button type="button" class="auth-switch__tab" id="tab-register" role="tab" aria-controls="panel-register" aria-selected="false">
+          Inscription
+        </button>
+      </div>
+
+      <section class="auth-panel" id="panel-login" role="tabpanel" aria-labelledby="tab-login">
       <form class="auth-form" id="login-form" novalidate>
         <div class="form-group">
           <label for="login-email">Courriel</label>
@@ -25,21 +36,66 @@ const title = 'Connexion | FlexPad';
         <p class="auth-form__error" id="login-error" hidden></p>
         <button type="submit" class="btn-primary">Se connecter</button>
       </form>
+      </section>
 
-      <p class="auth-page__hint">
-        Compte démo : <code>demo@flexpad.local</code> / <code>flexpad-demo</code> (après <code>pnpm run db:seed</code>).
-      </p>
+      <section class="auth-panel" id="panel-register" role="tabpanel" aria-labelledby="tab-register" hidden>
+        <form class="auth-form" id="register-form" novalidate>
+          <div class="form-group">
+            <label for="register-name">Nom</label>
+            <input type="text" id="register-name" name="name" class="form-control-like" autocomplete="name" />
+          </div>
+          <div class="form-group">
+            <label for="register-email">Courriel</label>
+            <input type="email" id="register-email" name="email" class="form-control-like" required autocomplete="email" />
+          </div>
+          <div class="form-group">
+            <label for="register-password">Mot de passe</label>
+            <input type="password" id="register-password" name="password" class="form-control-like" required autocomplete="new-password" minlength="6" />
+            <span class="form-hint">Minimum 6 caractères.</span>
+          </div>
+          <p class="auth-form__error" id="register-error" hidden></p>
+          <button type="submit" class="btn-secondary">Créer le compte</button>
+        </form>
+      </section>
 
       <div class="back-link">
-        <a href="/">← Retour à l’accueil</a>
+        <a href="/">Retour à l’accueil</a>
       </div>
     </main>
   </div>
 </Layout>
 
-<script define:vars={{ callbackUrl }}>
+<script define:vars={{ callbackUrl, mode }}>
   const form = document.getElementById('login-form');
   const errEl = document.getElementById('login-error');
+  const registerForm = document.getElementById('register-form');
+  const registerErrEl = document.getElementById('register-error');
+  const tabLogin = document.getElementById('tab-login');
+  const tabRegister = document.getElementById('tab-register');
+  const panelLogin = document.getElementById('panel-login');
+  const panelRegister = document.getElementById('panel-register');
+
+  function setMode(next) {
+    const isRegister = next === 'register';
+    tabLogin?.setAttribute('aria-selected', isRegister ? 'false' : 'true');
+    tabRegister?.setAttribute('aria-selected', isRegister ? 'true' : 'false');
+    tabLogin?.classList.toggle('is-active', !isRegister);
+    tabRegister?.classList.toggle('is-active', isRegister);
+    if (panelLogin) panelLogin.hidden = isRegister;
+    if (panelRegister) panelRegister.hidden = !isRegister;
+
+    const url = new URL(window.location.href);
+    url.searchParams.set('mode', isRegister ? 'register' : 'login');
+    window.history.replaceState({}, '', url);
+
+    const focusId = isRegister ? 'register-email' : 'login-email';
+    const el = document.getElementById(focusId);
+    if (el instanceof HTMLElement) el.focus();
+  }
+
+  tabLogin?.addEventListener('click', () => setMode('login'));
+  tabRegister?.addEventListener('click', () => setMode('register'));
+  setMode(mode === 'register' ? 'register' : 'login');
 
   /** Connexion credentials sans `auth-astro/client` : leur `signIn` fait `new URL(data.url)` sans base, ce qui jette si Auth renvoie une URL relative (succès). */
   async function signInCredentials(email, password, nextUrl) {
@@ -121,6 +177,51 @@ const title = 'Connexion | FlexPad';
       if (errEl) {
         errEl.textContent = 'Une erreur est survenue. Réessayez.';
         errEl.hidden = false;
+      }
+    }
+  });
+
+  registerForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (registerErrEl) {
+      registerErrEl.hidden = true;
+      registerErrEl.textContent = '';
+    }
+    const fd = new FormData(registerForm);
+    const payload = {
+      name: String(fd.get('name') || ''),
+      email: String(fd.get('email') || ''),
+      password: String(fd.get('password') || ''),
+    };
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (registerErrEl) {
+          registerErrEl.textContent = j.error || 'Inscription impossible.';
+          registerErrEl.hidden = false;
+        }
+        return;
+      }
+
+      // Auto-login après inscription
+      const nextUrl = callbackUrl || '/dashboard';
+      const out = await signInCredentials(payload.email, payload.password, nextUrl);
+      if (out.ok) window.location.assign(out.redirectTo);
+      else if (registerErrEl) {
+        registerErrEl.textContent = 'Compte créé, mais connexion impossible. Réessayez.';
+        registerErrEl.hidden = false;
+      }
+    } catch (err) {
+      console.error('[register]', err);
+      if (registerErrEl) {
+        registerErrEl.textContent = 'Une erreur est survenue. Réessayez.';
+        registerErrEl.hidden = false;
       }
     }
   });

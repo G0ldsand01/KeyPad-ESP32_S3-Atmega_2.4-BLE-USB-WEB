@@ -14,12 +14,15 @@ if (!session?.user) {
   return Astro.redirect('/login?callbackUrl=/dashboard');
 }
 
-const recent = await db
-  .select()
-  .from(orders)
-  .where(eq(orders.userId, session.user.id))
-  .orderBy(desc(orders.createdAt))
-  .limit(3);
+const dbEnabled = Boolean(import.meta.env.DATABASE_URL);
+const recent = dbEnabled
+  ? await db
+      .select()
+      .from(orders)
+      .where(eq(orders.userId, session.user.id))
+      .orderBy(desc(orders.createdAt))
+      .limit(3)
+  : [];
 
 const title = 'Tableau de bord | FlexPad';
 const isAdmin = session.user.role === 'admin';
@@ -71,6 +74,16 @@ const isAdmin = session.user.role === 'admin';
           </a>
         )}
       </div>
+
+      {!dbEnabled && (
+        <div class="dashboard-card reveal visible dash-empty">
+          <h2 class="dashboard-card__title">Historique désactivé</h2>
+          <p class="dashboard-note">
+            La base de données est désactivée pour le déploiement Vercel. Le checkout fonctionne, mais les commandes
+            ne sont pas enregistrées dans le compte.
+          </p>
+        </div>
+      )}
 
       {recent.length > 0 && (
         <div class="dashboard-card reveal visible dash-recent">

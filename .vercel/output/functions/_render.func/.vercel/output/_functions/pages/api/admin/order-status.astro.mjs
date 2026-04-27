@@ -1,10 +1,18 @@
 import { eq } from 'drizzle-orm';
-import { g as getSession, d as db, o as orders } from '../../../chunks/server_D6DUr65O.mjs';
-import { p as parseOrderStatus } from '../../../chunks/orders_DfkalkK-.mjs';
+import { g as getSession } from '../../../chunks/server_CatkvZha.mjs';
+import { d as db, o as orders } from '../../../chunks/index_CRES2LJX.mjs';
+import { p as parseOrderStatus } from '../../../chunks/orders_C_9vI6qd.mjs';
 export { renderers } from '../../../renderers.mjs';
 
 const prerender = false;
 const POST = async ({ request }) => {
+  const url = process.env.DATABASE_URL?.trim();
+  if (!url || !/^postgres(ql)?:\/\//i.test(url)) {
+    return new Response(JSON.stringify({ error: "Base de données désactivée (démo Vercel)" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
   const session = await getSession(request);
   if (!session?.user || session.user.role !== "admin") {
     return new Response(JSON.stringify({ error: "Interdit" }), {

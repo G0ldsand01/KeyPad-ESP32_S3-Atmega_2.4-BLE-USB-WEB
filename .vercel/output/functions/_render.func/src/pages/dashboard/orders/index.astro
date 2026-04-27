@@ -15,11 +15,14 @@ if (!session?.user) {
   return Astro.redirect('/login?callbackUrl=/dashboard/orders');
 }
 
-const userOrders = await db
-  .select()
-  .from(orders)
-  .where(eq(orders.userId, session.user.id))
-  .orderBy(desc(orders.createdAt));
+const dbEnabled = Boolean(import.meta.env.DATABASE_URL);
+const userOrders = dbEnabled
+  ? await db
+      .select()
+      .from(orders)
+      .where(eq(orders.userId, session.user.id))
+      .orderBy(desc(orders.createdAt))
+  : [];
 
 function parseItems(json: string): CartLine[] {
   try {
@@ -57,9 +60,17 @@ const isAdmin = session.user.role === 'admin';
       {userOrders.length === 0 ? (
         <div class="dashboard-card reveal visible dash-empty">
           <p class="dash-empty__icon" aria-hidden="true">📦</p>
-          <h2 class="dashboard-card__title">Aucune commande</h2>
+          <h2 class="dashboard-card__title">{dbEnabled ? 'Aucune commande' : 'Historique désactivé'}</h2>
           <p class="dashboard-note">
-            Passez une commande depuis la page <a href="/checkout/">Commander</a> en étant connecté pour la voir ici.
+            {dbEnabled ? (
+              <>
+                Passez une commande depuis la page <a href="/checkout/">Commander</a> en étant connecté pour la voir ici.
+              </>
+            ) : (
+              <>
+                La base de données est désactivée pour le déploiement Vercel: les commandes ne sont pas enregistrées.
+              </>
+            )}
           </p>
           <a href="/product/" class="btn-primary">Voir le produit</a>
         </div>

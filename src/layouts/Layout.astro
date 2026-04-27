@@ -21,6 +21,10 @@ const deployVersion =
   (typeof process !== 'undefined' ? process.env.VERCEL_DEPLOYMENT_ID : undefined) ??
   Date.now().toString(36);
 const assetVersion = String(deployVersion).slice(0, 16);
+const gitCommitSha =
+  typeof process !== 'undefined' && process.env.VERCEL_GIT_COMMIT_SHA
+    ? String(process.env.VERCEL_GIT_COMMIT_SHA)
+    : undefined;
 ---
 
 <!DOCTYPE html>
@@ -43,10 +47,18 @@ const assetVersion = String(deployVersion).slice(0, 16);
   )}
   <link rel="stylesheet" href="/styles/glass-nav.css" />
   <meta name="flexpad-build" content={assetVersion} />
+  {gitCommitSha && <meta name="flexpad-git-sha" content={gitCommitSha} />}
   <ViewTransitions />
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.563.0/dist/umd/lucide.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
+  <span
+    id="flexpad-build-marker"
+    hidden
+    aria-hidden="true"
+    data-version={assetVersion}
+    data-git-sha={gitCommitSha ?? ''}
+  />
   <GlassNav />
   {site && (
     <div class="site-header-actions">

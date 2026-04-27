@@ -3,8 +3,9 @@ const deployVersion =
   import.meta.env.PUBLIC_ASSET_VERSION ??
   (typeof process !== 'undefined' ? process.env.VERCEL_GIT_COMMIT_SHA : undefined) ??
   (typeof process !== 'undefined' ? process.env.VERCEL_DEPLOYMENT_ID : undefined) ??
+  import.meta.env.BUILD_ID ??
   Date.now().toString(36);
-const buildId = String(deployVersion).slice(0, 8);
+const buildId = String(deployVersion).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'unknown';
 ---
 
 <footer class="main-footer">
