@@ -2,9 +2,14 @@
  * Page /config/ — même rôle que l’ancien script inline : initApp (macropad-app.js).
  * Chargement dynamique pour ne pas télécharger ~140 ko sur les pages vitrine.
  * View Transitions : réinit à chaque astro:page-load sur l’onglet principal.
+ *
+ * Chargement direct (URL /config/) : `astro:page-load` peut déjà être passé avant
+ * ce module (scripts en fin de <body>), donc on lance aussi un boot explicite.
+ * Jeton : évite d’appeler initApp deux fois si les deux chemins arrivent en même temps.
  */
 
 let lucideThemeObserver = null;
+let macropadBootToken = 0;
 
 function setupLucideThemeObserver() {
   if (lucideThemeObserver) {
@@ -30,9 +35,12 @@ async function bootMacropad() {
     }
     return;
   }
+  const token = ++macropadBootToken;
   const { initApp } = await import('./macropad-app.js');
+  if (token !== macropadBootToken) return;
   initApp();
   setupLucideThemeObserver();
 }
 
 document.addEventListener('astro:page-load', bootMacropad);
+void bootMacropad();
