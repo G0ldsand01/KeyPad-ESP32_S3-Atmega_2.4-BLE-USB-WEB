@@ -61,52 +61,91 @@ import Layout from '../../layouts/Layout.astro';
   </div>
 
   <script is:inline>
-    // Page /panier : utilise les helpers globaux de /scripts/cart.js
-    document.addEventListener('astro:page-load', () => {
-      const emptyEl = document.getElementById('cart-page-empty');
-      const contentEl = document.getElementById('cart-page-content');
-      const qtyInput = document.getElementById('quantity');
-      const removeBtn = document.getElementById('btn-remove-cart');
-      const lineTotalEl = document.getElementById('line-total');
+    // Page /panier : dépend de window.FlexPadCart (cart.js, chargé après ce bloc). On s’aligne sur flexpad:cart-ready + View Transitions.
+    (function () {
+      function whenDocumentReady(cb) {
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', cb, { once: true });
+        } else {
+          queueMicrotask(cb);
+        }
+      }
 
-      const getCart = () => window.FlexPadCart?.getCart?.() ?? { items: [], total: 0 };
-      const formatCad = (value) =>
-        new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(value);
+      var panierAbort = null;
 
-      const syncUI = () => {
-        const cart = getCart();
-        const hasItems = Array.isArray(cart.items) && cart.items.length > 0;
-        if (contentEl) contentEl.hidden = !hasItems;
-        if (emptyEl) emptyEl.hidden = hasItems;
-        if (qtyInput && hasItems) {
-          const item = cart.items.find((i) => i.id === 'flexpad');
-          if (item) {
-            qtyInput.value = String(item.quantity);
-            if (lineTotalEl) lineTotalEl.textContent = formatCad(item.price * item.quantity);
+      function initPanierPage() {
+        var emptyEl = document.getElementById('cart-page-empty');
+        var contentEl = document.getElementById('cart-page-content');
+        var qtyInput = document.getElementById('quantity');
+        var removeBtn = document.getElementById('btn-remove-cart');
+        var lineTotalEl = document.getElementById('line-total');
+        if (!contentEl && !emptyEl) return;
+
+        if (panierAbort) panierAbort.abort();
+        panierAbort = new AbortController();
+        var signal = panierAbort.signal;
+
+        var getCart = function () {
+          return window.FlexPadCart && window.FlexPadCart.getCart ? window.FlexPadCart.getCart() : { items: [], total: 0 };
+        };
+        var formatCad = function (value) {
+          return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(value);
+        };
+        var syncUI = function () {
+          var cart = getCart();
+          var hasItems = Array.isArray(cart.items) && cart.items.length > 0;
+          if (contentEl) contentEl.hidden = !hasItems;
+          if (emptyEl) emptyEl.hidden = hasItems;
+          if (qtyInput && hasItems) {
+            var item = cart.items.find(function (i) {
+              return i.id === 'flexpad';
+            });
+            if (item) {
+              qtyInput.value = String(item.quantity);
+              if (lineTotalEl) lineTotalEl.textContent = formatCad(item.price * item.quantity);
+            }
           }
-        }
-      };
+        };
 
-      syncUI();
-
-      document.addEventListener('flexpad:cart-updated', syncUI);
-
-      qtyInput?.addEventListener('change', () => {
-        const raw = parseInt(qtyInput.value || '1', 10);
-        const q = Number.isFinite(raw) ? Math.max(0, raw) : 1;
-        if (q === 0) {
-          window.FlexPadCart?.showRemoveOverlay?.('flexpad');
-          syncUI();
-          return;
-        }
-        window.FlexPadCart?.setItemQuantityById?.('flexpad', q);
         syncUI();
-      });
 
-      removeBtn?.addEventListener('click', () => {
-        window.FlexPadCart?.showRemoveOverlay?.('flexpad');
+        document.addEventListener('flexpad:cart-updated', syncUI, { signal: signal });
+
+        if (qtyInput) {
+          qtyInput.addEventListener(
+            'change',
+            function () {
+              var raw = parseInt(qtyInput.value || '1', 10);
+              var q = Number.isFinite(raw) ? Math.max(0, raw) : 1;
+              if (q === 0) {
+                if (window.FlexPadCart && window.FlexPadCart.showRemoveOverlay) window.FlexPadCart.showRemoveOverlay('flexpad');
+                syncUI();
+                return;
+              }
+              if (window.FlexPadCart && window.FlexPadCart.setItemQuantityById) window.FlexPadCart.setItemQuantityById('flexpad', q);
+              syncUI();
+            },
+            { signal: signal }
+          );
+        }
+
+        if (removeBtn) {
+          removeBtn.addEventListener(
+            'click',
+            function () {
+              if (window.FlexPadCart && window.FlexPadCart.showRemoveOverlay) window.FlexPadCart.showRemoveOverlay('flexpad');
+            },
+            { signal: signal }
+          );
+        }
+      }
+
+      document.addEventListener('astro:page-load', initPanierPage);
+      document.addEventListener('flexpad:cart-ready', initPanierPage);
+      whenDocumentReady(function () {
+        if (window.FlexPadCart) initPanierPage();
       });
-    });
+    })();
   </script>
 </Layout>
 

@@ -2,6 +2,14 @@
  * Page Commander — compatible View Transitions (astro:page-load)
  */
 
+function whenDocumentReady(cb) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', cb, { once: true });
+  } else {
+    queueMicrotask(cb);
+  }
+}
+
 const CART_KEY = 'flexpad_cart';
 const unitPrice = 149.99;
 
@@ -278,4 +286,4 @@ function initCheckoutPage() {
 }
 
 document.addEventListener('astro:page-load', initCheckoutPage);
-document.addEventListener('DOMContentLoaded', initCheckoutPage);
+whenDocumentReady(initCheckoutPage);

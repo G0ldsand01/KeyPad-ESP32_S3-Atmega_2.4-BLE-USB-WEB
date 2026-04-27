@@ -8,6 +8,14 @@
  * Jeton : évite d’appeler initApp deux fois si les deux chemins arrivent en même temps.
  */
 
+function whenDocumentReady(cb) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', cb, { once: true });
+  } else {
+    queueMicrotask(cb);
+  }
+}
+
 let lucideThemeObserver = null;
 let macropadBootToken = 0;
 
@@ -69,4 +77,4 @@ async function bootMacropad() {
 }
 
 document.addEventListener('astro:page-load', bootMacropad);
-void bootMacropad();
+whenDocumentReady(() => void bootMacropad());

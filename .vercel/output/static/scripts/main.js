@@ -1,7 +1,16 @@
 /**
  * FlexPad - Parallaxe, révélations au scroll, ancres douces
  * Compatible Astro View Transitions : réinit à chaque navigation (astro:page-load)
+ *
+ * Si le module s'exécute après DOMContentLoaded (souvent en prod / Vercel), on lance quand même l'init.
  */
+function whenDocumentReady(cb) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', cb, { once: true });
+  } else {
+    queueMicrotask(cb);
+  }
+}
 
 let parallaxAbort = null;
 let smoothScrollAbort = null;
@@ -130,4 +139,4 @@ function initPage() {
 }
 
 document.addEventListener('astro:page-load', initPage);
-document.addEventListener('DOMContentLoaded', () => initPage());
+whenDocumentReady(initPage);

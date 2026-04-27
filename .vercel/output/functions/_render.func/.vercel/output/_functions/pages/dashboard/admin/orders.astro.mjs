@@ -1,5 +1,5 @@
 import { c as createComponent, g as renderComponent, r as renderTemplate, d as createAstro, m as maybeRenderHead, e as addAttribute } from '../../../chunks/astro/server_DYDqy7ws.mjs';
-import { $ as $$Layout } from '../../../chunks/Layout_B3T-4WXt.mjs';
+import { $ as $$Layout } from '../../../chunks/Layout_QyV7CE-J.mjs';
 import { $ as $$DashboardChrome } from '../../../chunks/DashboardChrome_CnSmYUvn.mjs';
 import { g as getSession } from '../../../chunks/server_CatkvZha.mjs';
 import { eq, desc } from 'drizzle-orm';

@@ -47,53 +47,70 @@ const isAdmin = session.user.role === 'admin';
   </div>
 </Layout>
 
-<script>
-  const KEY = 'flexpad_wishlist';
-  const root = document.getElementById('wishlist-root');
-  const emptyTpl = document.getElementById('wishlist-empty-tpl');
-  const listTpl = document.getElementById('wishlist-list-tpl');
+<script is:inline>
+  (function () {
+    var KEY = 'flexpad_wishlist';
 
-  function readList() {
-    try {
-      const raw = localStorage.getItem(KEY);
-      const data = raw ? JSON.parse(raw) : [];
-      return Array.isArray(data) ? data : [];
-    } catch {
-      return [];
+    function whenDocumentReady(cb) {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', cb, { once: true });
+      } else {
+        queueMicrotask(cb);
+      }
     }
-  }
 
-  function render() {
-    if (!root) return;
-    const items = readList();
-    root.innerHTML = '';
-    if (items.length === 0) {
-      const node = emptyTpl?.content.cloneNode(true);
-      if (node) root.appendChild(node);
-      return;
+    function readList() {
+      try {
+        var raw = localStorage.getItem(KEY);
+        var data = raw ? JSON.parse(raw) : [];
+        return Array.isArray(data) ? data : [];
+      } catch (e) {
+        return [];
+      }
     }
-    const frag = listTpl?.content.cloneNode(true);
-    if (!frag || !(frag instanceof DocumentFragment)) return;
-    const ul = frag.querySelector('#wishlist-items');
-    items.forEach((entry) => {
-      const li = document.createElement('li');
-      li.className = 'wishlist-item';
-      const name = typeof entry.name === 'string' ? entry.name : 'Produit';
-      const id = typeof entry.id === 'string' ? entry.id : '';
-      li.innerHTML = `<span class="wishlist-item__name">${name}</span><button type="button" class="btn-secondary btn-sm wishlist-remove" data-id="${id}">Retirer</button>`;
-      ul?.appendChild(li);
-    });
-    root.appendChild(frag);
-    root.querySelectorAll('.wishlist-remove').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-id');
-        const next = readList().filter((x) => x.id !== id);
-        localStorage.setItem(KEY, JSON.stringify(next));
-        render();
+
+    function render() {
+      var root = document.getElementById('wishlist-root');
+      var emptyTpl = document.getElementById('wishlist-empty-tpl');
+      var listTpl = document.getElementById('wishlist-list-tpl');
+      if (!root) return;
+      var items = readList();
+      root.innerHTML = '';
+      if (items.length === 0) {
+        var node = emptyTpl && emptyTpl.content ? emptyTpl.content.cloneNode(true) : null;
+        if (node) root.appendChild(node);
+        return;
+      }
+      var frag = listTpl && listTpl.content ? listTpl.content.cloneNode(true) : null;
+      if (!frag) return;
+      var ul = frag.querySelector('#wishlist-items');
+      items.forEach(function (entry) {
+        var li = document.createElement('li');
+        li.className = 'wishlist-item';
+        var name = typeof entry.name === 'string' ? entry.name : 'Produit';
+        var id = typeof entry.id === 'string' ? entry.id : '';
+        li.innerHTML =
+          '<span class="wishlist-item__name">' +
+          name +
+          '</span><button type="button" class="btn-secondary btn-sm wishlist-remove" data-id="' +
+          id +
+          '">Retirer</button>';
+        if (ul) ul.appendChild(li);
       });
-    });
-  }
+      root.appendChild(frag);
+      root.querySelectorAll('.wishlist-remove').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var id = btn.getAttribute('data-id');
+          var next = readList().filter(function (x) {
+            return x.id !== id;
+          });
+          localStorage.setItem(KEY, JSON.stringify(next));
+          render();
+        });
+      });
+    }
 
-  document.addEventListener('DOMContentLoaded', render);
-  document.addEventListener('astro:page-load', render);
+    document.addEventListener('astro:page-load', render);
+    whenDocumentReady(render);
+  })();
 </script>

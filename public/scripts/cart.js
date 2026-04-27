@@ -460,7 +460,10 @@ function bindQuantityInputs(signal) {
 }
 
 function initCart() {
-  if (!document.getElementById('flexpad-cart-widget')) return;
+  if (!document.getElementById('flexpad-cart-widget')) {
+    document.dispatchEvent(new CustomEvent('flexpad:cart-ready', { bubbles: true }));
+    return;
+  }
   if (cartAbort) cartAbort.abort();
   cartAbort = new AbortController();
   const { signal } = cartAbort;

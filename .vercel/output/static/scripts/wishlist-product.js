@@ -1,6 +1,15 @@
 /**
  * Bouton « Liste de souhaits » sur la fiche FlexPad
  */
+
+function whenDocumentReady(cb) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', cb, { once: true });
+  } else {
+    queueMicrotask(cb);
+  }
+}
+
 const WISHLIST_KEY = 'flexpad_wishlist';
 
 function readList() {
@@ -51,5 +60,5 @@ function initWishlistBtn() {
   });
 }
 
-document.addEventListener('DOMContentLoaded', initWishlistBtn);
 document.addEventListener('astro:page-load', initWishlistBtn);
+whenDocumentReady(initWishlistBtn);
