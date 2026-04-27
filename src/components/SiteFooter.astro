@@ -1,4 +1,10 @@
 ---
+const deployVersion =
+  import.meta.env.PUBLIC_ASSET_VERSION ??
+  (typeof process !== 'undefined' ? process.env.VERCEL_GIT_COMMIT_SHA : undefined) ??
+  (typeof process !== 'undefined' ? process.env.VERCEL_DEPLOYMENT_ID : undefined) ??
+  Date.now().toString(36);
+const buildId = String(deployVersion).slice(0, 8);
 ---
 
 <footer class="main-footer">
@@ -10,6 +16,8 @@
       <span class="main-footer__credit">Mathieu Goulet, Créateur</span>
       <span class="main-footer__sep" aria-hidden="true">·</span>
       <span class="main-footer__tagline">BE PRODUCTIVE</span>
+      <span class="main-footer__sep" aria-hidden="true">·</span>
+      <span class="main-footer__credit">Build {buildId}</span>
     </p>
   </div>
 </footer>
