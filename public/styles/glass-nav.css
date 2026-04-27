@@ -51,7 +51,7 @@ body:has(.main-page) {
   top: 1rem;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 1100;
+  z-index: 2100;
   max-width: min(96vw, 52rem);
   animation: glassNavIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
@@ -161,7 +161,7 @@ body:has(.main-page) {
   display: none;
   position: fixed;
   inset: 0;
-  z-index: 1095;
+  z-index: 2095;
   background: rgba(0, 0, 0, 0.5);
   -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
@@ -246,6 +246,12 @@ body:has(.main-page) {
     overflow: hidden;
   }
 
+  /* Quand le menu mobile est ouvert, masquer le dock auth/panier à droite */
+  body.glass-nav-menu-open .site-header-actions {
+    opacity: 0;
+    pointer-events: none;
+  }
+
   /* À gauche, même retrait que panier + connexion à droite (1rem / safe-area) */
   .glass-nav-dock {
     left: var(--site-nav-edge);
@@ -288,7 +294,7 @@ body:has(.main-page) {
     backdrop-filter: blur(16px) saturate(1.35);
     border: 1px solid var(--nav-glass-border);
     box-shadow: var(--nav-shadow);
-    z-index: 1110;
+    z-index: 2110;
   }
 
   .glass-nav-mount--open .glass-nav__panel {

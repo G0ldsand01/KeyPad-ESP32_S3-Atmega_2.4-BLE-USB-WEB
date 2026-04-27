@@ -14,6 +14,8 @@ interface Props {
 }
 
 const { title = "Configuration Macropad", site = false, backdrop = false } = Astro.props;
+// Cache-buster pour Vercel/CDN: force le refresh des fichiers /public/ à chaque build.
+const assetVersion = (import.meta.env.PUBLIC_ASSET_VERSION ?? Date.now().toString(36)).toString();
 ---
 
 <!DOCTYPE html>
@@ -71,10 +73,10 @@ const { title = "Configuration Macropad", site = false, backdrop = false } = Ast
   ) : (
     <slot />
   )}
-  <script src="/scripts/main.js" type="module"></script>
-  <script src="/scripts/cart.js" type="module"></script>
-  <script src="/scripts/checkout-page.js" type="module"></script>
-  <script src="/scripts/contact-page.js" type="module"></script>
-  <script src="/scripts/config-page.js" type="module"></script>
+  <script src={`/scripts/main.js?v=${assetVersion}`} type="module"></script>
+  <script src={`/scripts/cart.js?v=${assetVersion}`} type="module"></script>
+  <script src={`/scripts/checkout-page.js?v=${assetVersion}`} type="module"></script>
+  <script src={`/scripts/contact-page.js?v=${assetVersion}`} type="module"></script>
+  <script src={`/scripts/config-page.js?v=${assetVersion}`} type="module"></script>
 </body>
 </html>

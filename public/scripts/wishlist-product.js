@@ -20,6 +20,8 @@ function writeList(items) {
 function initWishlistBtn() {
   const btn = document.getElementById('btn-add-wishlist');
   if (!btn) return;
+  if (btn.dataset.wishlistBound === '1') return;
+  btn.dataset.wishlistBound = '1';
 
   const render = () => {
     const list = readList();
