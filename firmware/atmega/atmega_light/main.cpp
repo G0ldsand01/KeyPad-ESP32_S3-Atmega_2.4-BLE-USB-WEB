@@ -52,7 +52,13 @@
 // Pour un écran 1.9" 170x320, utiliser 170 comme hauteur
 // Si il y a du bruit en bas, essayer 172 ou ajuster les offsets
 #define ST7789_WIDTH 320
-#define ST7789_HEIGHT 210
+// Beaucoup de modules 1.9" sont 170x320 (landscape = 320x170).
+// Une hauteur trop grande peut adresser hors zone visible (aucun pixel affiché).
+#define ST7789_HEIGHT 170
+// Offsets matériels (très commun sur les dalles 170x320 basées ST7789)
+// Si l'écran reste vide, essaie YSTART=0 ou XSTART=35 selon ton module/rotation.
+#define ST7789_XSTART 0
+#define ST7789_YSTART 35
 #define ST7789_CS_PORT PORTB
 #define ST7789_CS_DDR DDRB
 #define ST7789_CS_PIN PB2
@@ -218,22 +224,24 @@ void set_led_brightness(uint8_t brightness) {
 
 // Initialiser SPI pour ST7789
 void spi_init(void) {
-    // Configurer SPI en mode maître, vitesse F_CPU/4
-    SPCR = (1 << SPE) | (1 << MSTR);  // SPI Enable, Master mode
-    SPSR = (1 << SPI2X);  // Double speed
-    
-    // Pins SPI
-    DDRB |= (1 << PB3) | (1 << PB5);  // MOSI et SCK en sortie
-    DDRB &= ~(1 << PB4);  // MISO en entrée
-    
-    // Pins de contrôle ST7789
+    // IMPORTANT (AVR): le pin SS (PB2) DOIT être configuré en sortie et maintenu HIGH
+    // avant d'activer le SPI en mode maître, sinon le matériel peut basculer en mode esclave
+    // et certaines transmissions peuvent bloquer (SPIF ne se déclenche pas).
     ST7789_CS_DDR |= (1 << ST7789_CS_PIN);
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);  // CS HIGH (SS high)
+
+    // Pins de contrôle ST7789
     ST7789_DC_DDR |= (1 << ST7789_DC_PIN);
     ST7789_RST_DDR |= (1 << ST7789_RST_PIN);
-    
-    // CS et RST HIGH par défaut
-    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
-    ST7789_RST_PORT |= (1 << ST7789_RST_PIN);
+    ST7789_RST_PORT |= (1 << ST7789_RST_PIN); // RST HIGH par défaut
+
+    // Pins SPI
+    DDRB |= (1 << PB3) | (1 << PB5);  // MOSI et SCK en sortie
+    DDRB &= ~(1 << PB4);              // MISO en entrée
+
+    // Configurer SPI en mode maître, vitesse F_CPU/2
+    SPCR = (1 << SPE) | (1 << MSTR);  // SPI Enable, Master mode
+    SPSR = (1 << SPI2X);              // Double speed
 }
 
 // Envoyer un byte via SPI
@@ -270,6 +278,7 @@ void st7789_write_data_multiple(uint8_t* data, uint16_t len) {
 
 // Initialiser le ST7789
 void st7789_init(void) {
+    LOG_INFO("[TFT] reset hw\r\n");
     // Reset hardware
     ST7789_RST_PORT &= ~(1 << ST7789_RST_PIN);
     _delay_ms(20);
@@ -277,20 +286,24 @@ void st7789_init(void) {
     _delay_ms(20);
     
     // Software reset
+    LOG_INFO("[TFT] swreset\r\n");
     st7789_write_cmd(ST7789_SWRESET);
     _delay_ms(150);
     
     // Sortir du mode sleep
+    LOG_INFO("[TFT] slpout\r\n");
     st7789_write_cmd(ST7789_SLPOUT);
     _delay_ms(150);
     
     // Configuration couleur (RGB565)
+    LOG_INFO("[TFT] colmod\r\n");
     st7789_write_cmd(ST7789_COLMOD);
     st7789_write_data(0x55);  // 16-bit color (RGB565)
     _delay_ms(10);
     
     // Memory access control (orientation)
     // Pour un écran 1.9" 170x320 en mode landscape, connecteur à droite
+    LOG_INFO("[TFT] madctl\r\n");
     st7789_write_cmd(ST7789_MADCTL);
     // Essayer différentes valeurs pour trouver la bonne rotation
     // 0x00 = Normal (portrait, RGB order)
@@ -300,21 +313,25 @@ void st7789_init(void) {
     st7789_write_data(0xA0);  // Rotation 270° : landscape avec connecteur à droite
     _delay_ms(10);
     
-    // Inversion des couleurs - INVON pour que 0x0000 soit noir
-    // Si le fond est blanc/rose avec INVOFF, utiliser INVON
-    st7789_write_cmd(ST7789_INVON);  // Inversion des couleurs activée
+    // Inversion des couleurs
+    // Plusieurs modules ST7789 ont besoin d'INVON pour que le rendu soit correct.
+    LOG_INFO("[TFT] invon\r\n");
+    st7789_write_cmd(ST7789_INVON);
     _delay_ms(10);
     
     // Activer l'affichage
+    LOG_INFO("[TFT] dispon\r\n");
     st7789_write_cmd(ST7789_DISPON);
     _delay_ms(100);  // Délai plus long pour s'assurer que l'écran est prêt
     
     // CRITIQUE: Remplir TOUT l'écran en noir avec fill_screen (plus fiable)
+    LOG_INFO("[TFT] fill black\r\n");
     uint16_t black = 0x0000;  // Noir RGB565
     st7789_fill_screen(black);  // Utiliser fill_screen pour être sûr que tout est noir
     _delay_ms(50);
     
     // Afficher les informations simplifiées
+    LOG_INFO("[TFT] ui\r\n");
     display_simple_info();
     
     // Marquer que l'affichage a été initialisé
@@ -325,19 +342,33 @@ void st7789_init(void) {
 
 // Définir la fenêtre d'affichage
 void st7789_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
-    // Pas d'offset - utiliser les coordonnées directement
+    // IMPORTANT: beaucoup de ST7789 n'aiment pas que CS remonte entre les bytes
+    // des paramètres CASET/RASET. On envoie donc chaque bloc en "burst" (CS bas).
+
+    // Appliquer offsets (certains panneaux ont une zone visible décalée dans la RAM)
+    x0 += ST7789_XSTART;
+    x1 += ST7789_XSTART;
+    y0 += ST7789_YSTART;
+    y1 += ST7789_YSTART;
+
     st7789_write_cmd(ST7789_CASET);
-    st7789_write_data(x0 >> 8);
-    st7789_write_data(x0 & 0xFF);
-    st7789_write_data(x1 >> 8);
-    st7789_write_data(x1 & 0xFF);
-    
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);  // CS LOW
+    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);   // DC HIGH (data)
+    spi_write((uint8_t)(x0 >> 8));
+    spi_write((uint8_t)(x0 & 0xFF));
+    spi_write((uint8_t)(x1 >> 8));
+    spi_write((uint8_t)(x1 & 0xFF));
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);   // CS HIGH
+
     st7789_write_cmd(ST7789_RASET);
-    st7789_write_data(y0 >> 8);
-    st7789_write_data(y0 & 0xFF);
-    st7789_write_data(y1 >> 8);
-    st7789_write_data(y1 & 0xFF);
-    
+    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);  // CS LOW
+    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);   // DC HIGH (data)
+    spi_write((uint8_t)(y0 >> 8));
+    spi_write((uint8_t)(y0 & 0xFF));
+    spi_write((uint8_t)(y1 >> 8));
+    spi_write((uint8_t)(y1 & 0xFF));
+    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);   // CS HIGH
+
     st7789_write_cmd(ST7789_RAMWR);
 }
 
@@ -559,7 +590,7 @@ void st7789_update_display(void) {
         return;  // L'image est déjà affichée, ne pas l'écraser
     }
     
-    uint16_t black = 0xFFFF;  // Noir RGB565
+    uint16_t black = 0x0000;  // Noir RGB565
     for (uint8_t i = 0; i < 2; i++) {
         st7789_fill_screen(black);
         _delay_ms(10);
@@ -717,7 +748,7 @@ int main(void) {
     // Initialiser le débogage (utilise maintenant l'UART principal)
     debug_init();
     debug_print("\r\n=== ATmega328P Light Controller ===\r\n");
-    debug_print("UART Baud: 115200\r\n");
+    debug_print("UART Baud: 9600\r\n");
     debug_print("Boot sequence started...\r\n");
     
     // Initialiser les périphériques
@@ -934,14 +965,9 @@ void display_light_level_on_screen(uint16_t value) {
 
 // Dessiner le panneau statique une seule fois (fond, bordures, séparateur)
 void display_init_panel(void) {
+    // Fond "propre" uniquement.
+    // Le contenu est redessiné ensuite par-dessus; on évite donc toute bordure/séparateur gris.
     st7789_fill_screen(BLACK_COL);
-    st7789_fill_rect(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, INNER_BG);
-    st7789_fill_rect(PANEL_X, PANEL_Y, PANEL_W, 1, BORDER_GRAY);
-    st7789_fill_rect(PANEL_X, PANEL_Y + PANEL_H - 1, PANEL_W, 1, BORDER_GRAY);
-    st7789_fill_rect(PANEL_X, PANEL_Y, 1, PANEL_H, BORDER_GRAY);
-    st7789_fill_rect(PANEL_X + PANEL_W - 1, PANEL_Y, 1, PANEL_H, BORDER_GRAY);
-    uint16_t sep_y = PANEL_Y + ((PANEL_H - CONTENT_HEIGHT) / 2) + 1 + ZONE_LINE_H + 2;
-    st7789_fill_rect(ZONE_X, sep_y, ZONE_W, 1, BORDER_GRAY);
 }
 
 // Helper: mettre une chaîne en majuscules dans out (max len-1 chars + null)
