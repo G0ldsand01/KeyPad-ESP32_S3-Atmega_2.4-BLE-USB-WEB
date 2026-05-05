@@ -17,6 +17,7 @@
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
+    "prebuild": "node scripts/clean-vercel-output.mjs",
     "build": "astro build && node scripts/patch-vercel-runtime.mjs",
     "preview": "astro preview",
     "astro": "astro",
