@@ -100,7 +100,7 @@ Description détaillée des fonctions de l'interface web et du firmware.
 
 - **TX** : GPIO 10 → ATmega RX
 - **RX** : GPIO 11 ← ATmega TX (diviseur 2k2/3k3 pour 5V→3.3V)
-- **Baud** : 9600
+- **Baud** : 57600 (ATmega328P : mode double vitesse USART, `U2X`)
 
 ### Commandes ATmega
 

@@ -32,6 +32,34 @@
 			"dest": "_render"
 		},
 		{
+			"src": "^\\/api\\/stripe\\/checkout-session\\/?$",
+			"dest": "_render"
+		},
+		{
+			"src": "^\\/api\\/stripe\\/connect\\/account\\/?$",
+			"dest": "_render"
+		},
+		{
+			"src": "^\\/api\\/stripe\\/connect\\/account-link\\/?$",
+			"dest": "_render"
+		},
+		{
+			"src": "^\\/api\\/stripe\\/health\\/?$",
+			"dest": "_render"
+		},
+		{
+			"src": "^\\/api\\/stripe\\/subscription\\/charge\\/?$",
+			"dest": "_render"
+		},
+		{
+			"src": "^\\/api\\/stripe\\/subscription\\/create-plan\\/?$",
+			"dest": "_render"
+		},
+		{
+			"src": "^\\/api\\/stripe\\/webhook\\/?$",
+			"dest": "_render"
+		},
+		{
 			"src": "^\\/dashboard\\/admin\\/analytics\\/?$",
 			"dest": "_render"
 		},

@@ -19,6 +19,9 @@
 #define NUM_ROWS 5
 #define NUM_COLS 4
 #define NUM_KEYS (NUM_ROWS * NUM_COLS)
+// Touche réservée au changement de profil (non mappable via Web) — coin haut-gauche 0,0.
+#define PROFILE_KEY_ROW 0
+#define PROFILE_KEY_COL 0
 
 static const uint8_t ROW_PINS[NUM_ROWS] = {4, 5, 6, 7, 15};   // R0..R4
 static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
@@ -26,6 +29,23 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define DEBOUNCE_MS 25
 #define REPEAT_DELAY_MS 500
 #define REPEAT_INTERVAL_MS 50
+
+// ─── Veille profonde + réveil par touche (toute touche = n'importe quelle colonne) ─
+// Avant veille : toutes les colonnes en sortie LOW, lignes en pull-up → une touche
+// relie ligne/colonne → ligne à 0 → EXT1 réveil (ESP32-S3).
+#define ENABLE_KEYPAD_SLEEP_WAKE     1
+// Temps sans activité (touche / encodeur) avant entrée en veille (ms).
+#define KEY_IDLE_DEEP_SLEEP_MS       (1u * 60u * 1000u)  // 1 min — ajuster au besoin
+// GPIO pour oscilloscope : HIGH dès le début du réveil / boot jusqu'à fin de setup();
+// courte impulsion HIGH à l'entrée en veille. Conflit si USE_ESP32_DISPLAY_ST7789 et RST=21.
+#define SLEEP_TIMING_GPIO            21
+// 0 = ne pas entrer en veille si BLE connecté (recommandé pour garder la liaison).
+#define SLEEP_WHEN_BLE_CONNECTED     0
+// Réveil EXT1 sans touche stable : 0 = repartir **toujours** en veille (pas de boot fantôme).
+// >0 = après ce nombre de réveils « fantômes » d’affilée, boot complet (debug / matrice défaillante).
+#define SLEEP_EXT1_PHANTOM_MAX_BOOT_AFTER 0
+// 1 = logs détaillés (GPIO EXT1 + phrases à chaque retour veille « pré-boot »). 0 = silencieux si pas encore fini setup().
+#define SLEEP_EXT1_VERBOSE_SERIAL       0
 
 // ─── Encodeur rotatif ───────────────────────────────────────────────────────
 #define ENC_CLK_PIN 3
@@ -51,7 +71,8 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define ENABLE_ATMEGA_UART 1
 #define ATMEGA_UART_TX 10
 #define ATMEGA_UART_RX 11
-#define ATMEGA_UART_BAUD 9600
+// Doit correspondre au débit programmé dans firmware/atmega/atmega_light/main.cpp (57600 @ 8 MHz, U2X).
+#define ATMEGA_UART_BAUD 57600
 
 #define CMD_READ_LIGHT 0x01
 #define CMD_SET_LED 0x02
@@ -63,6 +84,12 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define CMD_SET_ATMEGA_DEBUG 0x0A
 #define CMD_SET_ATMEGA_LOG_LEVEL 0x0B
 #define CMD_SET_LAST_KEY 0x0C
+#define CMD_SET_SCREEN_MODE 0x0D  // ESP32 -> ATmega: 0=UI data, 1=QR image (runtime)
+#define CMD_PREPARE_SLEEP 0x0E   // ESP32 -> ATmega: avant veille profonde (BL off + TFT SLPIN)
+#define CMD_RESUME_FROM_SLEEP 0x0F // ESP32 -> ATmega: SLPOUT + DISPON + rétro (payload: [bl_on][bl_0..255])
+// IMPORTANT: utiliser des valeurs hors ASCII (évite faux positifs dans les logs \r\n)
+#define CMD_SHOW_QR 0xF1   // ATmega -> ESP32: demander l'affichage du QR (image)
+#define CMD_IMAGE_ACK 0xF2 // ATmega -> ESP32: ACK d'un chunk image (idx low/high)
 
 // ─── LEDs ───────────────────────────────────────────────────────────────────
 // Strip NeoPixel / SK6812 (rétroéclairage RVB) — GPIO 48 sur carte finale
@@ -130,34 +157,51 @@ static const uint8_t COL_PINS[NUM_COLS] = {16, 17, 18, 8};    // C0..C3
 #define BLE_SVC_SERIAL "0000ffe0-0000-1000-8000-00805f9b34fb"
 #define BLE_CHAR_SERIAL "0000ffe1-0000-1000-8000-00805f9b34fb"
 
-// ─── Display update ─────────────────────────────────────────────────────────
+// ─── Display update / rafraîchissement TFT local ESP32 ─────────────────────
 #define DISPLAY_UPDATE_INTERVAL_MS 1000
 
-// ─── Affichage ST7789 piloté par l'ESP32 (bypass ATmega) ─────────────────────
-// Si tu câbles l'écran directement sur l'ESP32, active le bypass dans l'UI.
-// Pins demandées: GPIO42=DIN(MOSI), GPIO41=CLK(SCK), GPIO30=CS, GPIO39=DC, GPIO38=RST
-// NOTE: nécessite une lib ST7789 côté Arduino (ex: Adafruit_ST7789 + Adafruit_GFX).
+// ─── Écran ST7789 optionnel sur l'ESP32 (HUD ; couleurs type global.css) ────
+// 0 = aucun TFT sur l'ESP32. 1 = actif — adapte les pins à ton câblage
+// (ne pas utiliser GPIO 10/11 si UART ATmega activé).
 #define USE_ESP32_DISPLAY_ST7789 0
-#define ESP32_TFT_MOSI 42
-#define ESP32_TFT_SCK  41
-#define ESP32_TFT_CS   37  // Mettre -1 si CS est câblé à GND
-#define ESP32_TFT_DC   39
-#define ESP32_TFT_RST  38
-// Backlight (BLK) si câblée sur une pin ESP32. -1 = non utilisée (BLK reliée à 3V3 ou gérée ailleurs).
-#define ESP32_TFT_BL   36
-// 1 si BL est active-low (écran allumé quand BL=LOW)
-#define ESP32_TFT_BL_INVERT 0
-// Test écran au boot (debug SPI/câblage). 1 = splash test même si bypass OFF.
-#define ESP32_TFT_BOOT_TEST 0
-// Test matériel bas niveau (pins + SPI) pour debug: backlight PWM, reset, toggle CS/DC.
-#define ESP32_TFT_HW_PIN_TEST 0
-// Test ST7789 manuel (sans librairie): envoie init + remplissage RAM.
-// Utile si la backlight est OK mais aucun pixel ne s'affiche.
+#if USE_ESP32_DISPLAY_ST7789
+#define ESP32_TFT_SCK            14
+#define ESP32_TFT_MOSI           13
+#define ESP32_TFT_CS             12
+#define ESP32_TFT_DC             47
+#define ESP32_TFT_RST            21
+#define ESP32_TFT_BL             38
+#define ESP32_TFT_BL_INVERT      0
+#define ESP32_TFT_SPI_MODE       0
+#define ESP32_TFT_CS_GND         0
+#define ESP32_TFT_HW_PIN_TEST    0
 #define ESP32_TFT_MANUAL_ST7789_TEST 0
-// Mettre 1 si CS est relié à GND (ou non câblé): on ne togglera pas CS.
-#define ESP32_TFT_CS_GND 0
-// SPI mode à essayer si rien ne s'affiche (0 ou 3).
-#define ESP32_TFT_SPI_MODE 0
+#define ESP32_TFT_BOOT_TEST      0
+#endif
+
+// ─── Mode écran ATmega (compile-time) ───────────────────────────────────────
+// Permet de "hardcoder" quel flux est autorisé vers l'ATmega:
+// - UI only  : on envoie seulement les trames UI-data / last_key (pas de QR)
+// - QR only  : on envoie seulement l'image QR (pas de UI-data)
+// - AUTO     : comportement normal (UI-data), avec option "demo_mode" pour afficher QR.
+//
+// Valeurs:
+// 0 = UI only
+// 1 = QR only
+// 2 = AUTO
+#define ATMEGA_SCREEN_MODE 2
+#define ATMEGA_SCREEN_MODE_UI_ONLY 0
+#define ATMEGA_SCREEN_MODE_QR_ONLY 1
+#define ATMEGA_SCREEN_MODE_AUTO    2
+
+// 1 = à chaque boot / reset: profil actif = DEMO (QR). 0 = dernier profil sauvegardé en NVS.
+#define BOOT_START_ON_DEMO_PROFILE 1
+
+// 1 = au boot, si le profil actif est USER1 (pas DEMO), envoyer d'abord une image QR complète sur l'ATmega,
+// puis apply_screen_mode repasse en mode data + UI (réinitialise l'écran).
+#define ATMEGA_BOOT_QR_SPLASH_FOR_USER1 1
+
+// Écran principal : ATmega (UART). Optionnel : second TFT ST7789 sur ESP32 (voir USE_ESP32_DISPLAY_ST7789).
 
 // ─── Alimentation batterie (BLE) ─────────────────────────────────────────────
 // Si BLE n'est pas visible avec batterie 3.7V: la radio BLE consomme ~80-100 mA en TX.

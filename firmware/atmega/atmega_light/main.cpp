@@ -3,7 +3,7 @@
  * 
  * Fonctionnalités:
  * - Lecture du capteur TEMT6000 (luminosité ambiante)
- * - Communication UART avec ESP32 (9600 bauds, 8 MHz)
+ * - Communication UART avec ESP32 (57600 bauds @ 8 MHz, double vitesse U2X)
  * - Contrôle PWM de la LED de backlight
  * - Affichage sur écran ST7789 TFT (SPI)
  * 
@@ -22,15 +22,17 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/wdt.h>
-#include <util/delay.h>
-#include <string.h>
-
-// Configuration UART — 9600 baud @ 8 MHz (oscillateur interne)
-#define UART_BAUD 9600
 #ifndef F_CPU
 #define F_CPU 8000000UL
 #endif
-#define UART_UBRR 51  // 9600 @ 8MHz
+#include <util/delay.h>
+#include <avr/pgmspace.h>
+#include <avr/sleep.h>
+#include <string.h>
+
+// Configuration UART — 57600 baud @ 8 MHz avec U2X (diviseur 8, erreur raisonnable)
+#define UART_BAUD 57600
+#define UART_UBRR ((F_CPU / (8UL * UART_BAUD)) - 1UL)
 
 // Protocole UART
 // Format: [CMD] [DATA...] [\n]
@@ -44,6 +46,8 @@
 #define CMD_SET_ATMEGA_DEBUG 0x0A  // Activer/désactiver le debug UART sur l'ATmega
 #define CMD_SET_ATMEGA_LOG_LEVEL 0x0B  // Définir le niveau de log de l'ATmega
 #define CMD_SET_LAST_KEY 0x0C  // Envoyer uniquement la dernière touche appuyée
+#define CMD_PREPARE_SLEEP 0x0E // ESP32 : avant veille profonde (BL + consignes + SLPIN)
+#define CMD_RESUME_FROM_SLEEP 0x0F // ESP32 : réveil rapide — SLPOUT + DISPON + rétro ( données: bl_on, bl_val )
 
 // Capteur TEMT6000: 0 = ADC élevé = clair (LED OFF si >= 500), ADC bas = sombre (LED ON)
 #define LIGHT_SENSOR_INVERTED 0
@@ -73,6 +77,7 @@
 #define ST7789_NOP 0x00
 #define ST7789_SWRESET 0x01
 #define ST7789_SLPOUT 0x11
+#define ST7789_SLPIN 0x10
 #define ST7789_DISPOFF 0x28
 #define ST7789_DISPON 0x29
 #define ST7789_CASET 0x2A
@@ -83,11 +88,18 @@
 #define ST7789_INVON 0x21
 #define ST7789_INVOFF 0x20
 
-// Variables globales UART
-#define UART_BUFFER_SIZE 256
-volatile uint8_t uart_buffer[UART_BUFFER_SIZE];  // Buffer pour recevoir les commandes
+// Variables globales UART (SRAM ATmega328P = 2 Ko — éviter 8×256 octets de file)
+#define UART_BUFFER_SIZE 128
+#define UART_LINE_QUEUE_DEPTH 2
+volatile uint8_t uart_buffer[UART_BUFFER_SIZE];  // Ligne copiée ici avant processUartCommand
 volatile uint8_t uart_buffer_index = 0;
-volatile uint8_t uart_cmd_pending = 0;  // 1 = commande reçue, à traiter dans la boucle principale
+volatile uint8_t uart_line_queue[UART_LINE_QUEUE_DEPTH][UART_BUFFER_SIZE];
+volatile uint8_t uart_line_len[UART_LINE_QUEUE_DEPTH];
+volatile uint8_t uart_line_q_in = 0;
+volatile uint8_t uart_line_q_out = 0;
+volatile uint8_t uart_line_q_count = 0;
+static uint8_t uart_rx_line[UART_BUFFER_SIZE];
+static volatile uint8_t uart_rx_line_len = 0;
 volatile uint8_t uart_command = 0;
 volatile uint8_t led_brightness = 0;  // 0-255
 volatile uint16_t light_level = 0;    // Valeur ADC du TEMT6000 (0-1023)
@@ -95,8 +107,8 @@ volatile uint8_t esp32_backlight_ticks = 0;  // Si > 0: utiliser display_backlig
 
 // Variables pour la réception d'images
 #define IMAGE_CHUNK_SIZE 64  // Taille des chunks pour transmission UART (plus grand que I2C)
-volatile uint16_t image_expected_size = 0;  // Taille totale de l'image attendue
-volatile uint16_t image_received_bytes = 0;  // Nombre de bytes reçus
+volatile uint32_t image_expected_size = 0;  // Taille totale RGB565 (320×170×2 = 108800 > uint16_t)
+volatile uint32_t image_received_bytes = 0;  // Octets déjà écrits sur le TFT
 volatile uint16_t image_chunk_index = 0;  // Index du chunk en cours
 volatile uint8_t image_receiving = 0;  // Flag: 1 si on reçoit une image
 volatile uint8_t image_chunk_buffer[IMAGE_CHUNK_SIZE];  // Buffer pour stocker temporairement un chunk
@@ -119,6 +131,9 @@ volatile uint8_t display_brightness = 128;
 volatile uint8_t display_data_receiving = 0;
 volatile uint8_t display_data_buffer_index = 0;
 volatile uint8_t display_initialized = 0;  // Flag: 1 si l'affichage a été initialisé avec Welcome
+/** 1 si CMD SLPIN actif : tout st7789_write_cmd (sauf SLPIN) force SLPOUT + délai avant la commande. */
+static uint8_t tft_panel_asleep = 0;
+volatile uint8_t display_force_ui_reset = 0;  // 1 après image/gif → data : forcer redessin HUD complet
 
 // Variables pour le debug et logging
 volatile uint8_t debug_enabled = 0;  // 0 = désactivé, 1 = activé
@@ -166,6 +181,22 @@ void debug_print_dec(uint16_t val) {
     }
 }
 
+void debug_print_u32(uint32_t val) {
+    char buf[11];
+    uint8_t i = 0;
+    if (val == 0) {
+        uart_send_byte('0');
+        return;
+    }
+    while (val > 0 && i < 10) {
+        buf[i++] = '0' + (uint8_t)(val % 10u);
+        val /= 10u;
+    }
+    while (i > 0) {
+        uart_send_byte(buf[--i]);
+    }
+}
+
 // Macros conditionnelles pour le debug selon le niveau
 #define LOG_ERROR(x) do { if (debug_enabled && log_level >= 1) debug_print(x); } while(0)
 #define LOG_INFO(x) do { if (debug_enabled && log_level >= 2) debug_print(x); } while(0)
@@ -189,6 +220,7 @@ void display_light_level_on_screen(uint16_t value);
 void display_simple_info(void);
 void display_init_panel(void);
 void display_update_partial(uint8_t force_key_device);
+void display_draw_image_footer(void);
 
 // Initialiser ADC pour TEMT6000
 void adc_init(void) {
@@ -222,6 +254,28 @@ void set_led_brightness(uint8_t brightness) {
     OCR0B = brightness;  // PWM duty cycle
 }
 
+/** Coupe le backlight et invalide la priorité ESP32 — veille panneau (SLPIN / IDLE). */
+static void backlight_shutdown_for_panel_sleep(void) {
+    display_backlight_enabled = 0;
+    display_backlight_brightness = 0;
+    esp32_backlight_ticks = 0;
+    set_led_brightness(0);
+}
+
+/**
+ * PWM TFT : ON seulement si la dalle n’est pas en SLPIN.
+ * Sinon l’ESP32 (send_display_data / last_key) rallumerait la LED en boucle pendant la veille.
+ */
+static void apply_display_backlight_from_esp32_consider_sleep(void) {
+    if (tft_panel_asleep) {
+        esp32_backlight_ticks = 0;
+        set_led_brightness(0);
+    } else {
+        esp32_backlight_ticks = 100;
+        set_led_brightness(display_backlight_enabled ? display_backlight_brightness : 0);
+    }
+}
+
 // Initialiser SPI pour ST7789
 void spi_init(void) {
     // IMPORTANT (AVR): le pin SS (PB2) DOIT être configuré en sortie et maintenu HIGH
@@ -250,8 +304,25 @@ void spi_write(uint8_t data) {
     while (!(SPSR & (1 << SPIF)));
 }
 
-// Envoyer une commande au ST7789
+// Envoyer une commande au ST7789 (réveille le panneau si en SLPIN, sauf pour la commande SLPIN elle-même)
 void st7789_write_cmd(uint8_t cmd) {
+    if (cmd == ST7789_SLPIN) {
+        backlight_shutdown_for_panel_sleep();
+        ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+        ST7789_DC_PORT &= ~(1 << ST7789_DC_PIN);
+        spi_write(cmd);
+        ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+        tft_panel_asleep = 1;
+        return;
+    }
+    if (tft_panel_asleep) {
+        ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+        ST7789_DC_PORT &= ~(1 << ST7789_DC_PIN);
+        spi_write(ST7789_SLPOUT);
+        ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+        _delay_ms(120);
+        tft_panel_asleep = 0;
+    }
     ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);  // CS LOW
     ST7789_DC_PORT &= ~(1 << ST7789_DC_PIN);  // DC LOW (command)
     spi_write(cmd);
@@ -460,7 +531,7 @@ void st7789_draw_progress_bar(uint16_t x, uint16_t y, uint16_t w, uint16_t h, ui
 
 // Police bitmap simple 5x7 pour les caractères ASCII
 // Chaque caractère est représenté par 5 colonnes de 7 bits
-const uint8_t font_5x7[][5] = {
+const uint8_t font_5x7[][5] PROGMEM = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, // Espace (32)
     {0x00, 0x00, 0x5F, 0x00, 0x00}, // !
     {0x00, 0x07, 0x00, 0x07, 0x00}, // "
@@ -561,7 +632,7 @@ void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t b
     // Dessiner le caractère pixel par pixel
     // La police stocke les bits du LSB (bit 0) au MSB (bit 6) pour chaque colonne
     for (uint8_t col = 0; col < 5; col++) {
-        uint8_t col_data = font_5x7[char_index][col];
+        uint8_t col_data = pgm_read_byte(&font_5x7[char_index][col]);
         for (uint8_t row = 0; row < 7; row++) {
             // Vérifier le bit correspondant (bit 0 = ligne du bas, bit 6 = ligne du haut)
             if (col_data & (1 << row)) {
@@ -583,145 +654,56 @@ void st7789_draw_text(uint16_t x, uint16_t y, const char* text, uint16_t color, 
     }
 }
 
+/* Police x2 pour en-tête (lisibilité, remplit l'espace sans bitmap lourd) */
+static void ui_draw_char_x2(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg_color) {
+    if (c == ' ') {
+        st7789_fill_rect(x, y, 10, 14, bg_color);
+        return;
+    }
+    if (c >= 'a' && c <= 'z') {
+        c = (char)(c - 'a' + 'A');
+    }
+    if (c < 32 || c > 90) {
+        return;
+    }
+    uint8_t char_index = (uint8_t)(c - 32);
+    if (char_index >= (uint8_t)(sizeof(font_5x7) / sizeof(font_5x7[0]))) {
+        return;
+    }
+    for (uint8_t col = 0; col < 5; col++) {
+        uint8_t col_data = pgm_read_byte(&font_5x7[char_index][col]);
+        for (uint8_t row = 0; row < 7; row++) {
+            uint16_t px = (col_data & (uint8_t)(1u << row)) ? color : bg_color;
+            st7789_fill_rect(x + (uint16_t)col * 2u, y + (uint16_t)row * 2u, 2, 2, px);
+        }
+    }
+}
+
+static void ui_draw_text_x2(uint16_t x, uint16_t y, const char* text, uint16_t color, uint16_t bg_color) {
+    uint16_t x_pos = x;
+    while (*text) {
+        ui_draw_char_x2(x_pos, y, *text, color, bg_color);
+        x_pos += 12;
+        text++;
+    }
+}
+
 // Mettre à jour l'affichage avec les informations réelles
 void st7789_update_display(void) {
-    // Si on est en mode image ou gif, ne pas écraser l'image
+    if (image_receiving) {
+        return;
+    }
     if (strcmp((char*)display_mode, "image") == 0 || strcmp((char*)display_mode, "gif") == 0) {
-        return;  // L'image est déjà affichée, ne pas l'écraser
+        display_draw_image_footer();
+        return;
     }
-    
-    uint16_t black = 0x0000;  // Noir RGB565
-    for (uint8_t i = 0; i < 2; i++) {
-        st7789_fill_screen(black);
-        _delay_ms(10);
-    }
-    
-    // Afficher le texte plus bas pour qu'il soit bien visible en landscape
-    uint16_t text_x = 40;  // 40px de gauche
-    uint16_t text_y = 150;  // 150px du top (au lieu de 10)
-    uint16_t white = 0xFFFF;  // Blanc RGB565
-    
-    // Afficher "WELCOME TO MY KEYPAD" (en majuscules car la police ne supporte que A-Z)
-    st7789_draw_text(text_x, text_y, "WELCOME TO MY KEYPAD", white, black);
-    
-    // Afficher l'état de connexion sur la ligne suivante
-    uint16_t conn_y = text_y + 12;  // un peu plus bas que le premier texte
-    st7789_draw_text(text_x, conn_y, "CONNECTION : ", white, black);
-    
-    // Déterminer l'état de connexion
-    const char* conn_status = "IDLE";
-    if (strcmp((char*)display_output_mode, "usb") == 0) {
-        conn_status = "USB";
-    } else if (strcmp((char*)display_output_mode, "bluetooth") == 0) {
-        conn_status = "BLUETOOTH";
-    }
-    
-    // Afficher le statut de connexion (position après "CONNECTION : ")
-    uint16_t status_x = text_x + (13 * 6);  // 13 caractères * 6 pixels = 78 pixels
-    st7789_draw_text(status_x, conn_y, conn_status, white, black);
-    
-    return;  // On a affiché le Welcome, on sort (ne pas afficher les autres éléments)
-    
-    // Code ci-dessous n'est plus utilisé (affichage des barres de progression, etc.)
-    // Effacer l'écran avec un fond sombre (gris foncé au lieu de noir pour meilleur contraste)
-    uint16_t bg_color = 0x1082;  // Gris foncé RGB565
-    st7789_fill_screen(bg_color);
-    
-    // Couleurs RGB565
-    uint16_t color_green = 0x07E0;
-    uint16_t color_blue = 0x001F;
-    uint16_t color_red = 0xF800;
-    uint16_t color_yellow = 0xFFE0;
-    uint16_t color_cyan = 0x07FF;
-    uint16_t color_magenta = 0xF81F;
-    uint16_t color_gray = 0x8410;
-    uint16_t color_dark_gray = 0x4208;
-    
-    // Vérifier le mode d'affichage
-    // Si mode = "image" ou "gif", ne rien faire (l'image est déjà affichée)
-    // On vérifie seulement si on est en mode "data"
-    
-    // En-tête avec nom du profil (en haut)
-    uint16_t header_y = 5;
-    uint16_t header_height = 35;
-    st7789_fill_rect(5, header_y, 230, header_height, color_dark_gray);
-    // Bordure en bas de l'en-tête
-    st7789_fill_rect(5, header_y + header_height - 2, 230, 2, color_blue);
-    
-    // Indicateur de mode (petit rectangle coloré à gauche)
-    uint16_t mode_indicator_color = color_green;
-    if (strcmp((char*)display_mode, "image") == 0) mode_indicator_color = color_yellow;
-    else if (strcmp((char*)display_mode, "gif") == 0) mode_indicator_color = color_magenta;
-    st7789_fill_rect(8, header_y + 8, 8, 20, mode_indicator_color);
-    
-    // Zone d'information principale (milieu)
-    uint16_t info_y = header_y + header_height + 5;
-    uint16_t info_height = 200;
-    
-    // Fond de la zone d'information
-    st7789_fill_rect(5, info_y, 230, info_height, color_dark_gray);
-    
-    // Ligne 1: Mode de sortie (USB/BLE)
-    uint16_t line1_y = info_y + 10;
-    uint16_t output_color = color_cyan;
-    if (strcmp((char*)display_output_mode, "usb") == 0) output_color = color_green;
-    else if (strcmp((char*)display_output_mode, "bluetooth") == 0) output_color = color_blue;
-    st7789_fill_rect(10, line1_y, 100, 20, output_color);
-    
-    // Ligne 2: Nombre de touches configurées
-    uint16_t line2_y = line1_y + 30;
-    uint16_t keys_bar_width = (display_keys_count * 200) / 17;  // 17 touches max
-    if (keys_bar_width > 200) keys_bar_width = 200;
-    st7789_fill_rect(10, line2_y, 200, 20, color_gray);
-    if (keys_bar_width > 0) {
-        st7789_fill_rect(10, line2_y, keys_bar_width, 20, color_green);
-    }
-    
-    // Ligne 3: Backlight status
-    uint16_t line3_y = line2_y + 30;
-    uint16_t backlight_color = display_backlight_enabled ? color_yellow : color_dark_gray;
-    uint16_t backlight_width = (display_backlight_brightness * 200) / 255;
-    if (backlight_width > 200) backlight_width = 200;
-    st7789_fill_rect(10, line3_y, 200, 20, color_gray);
-    if (backlight_width > 0) {
-        st7789_fill_rect(10, line3_y, backlight_width, 20, backlight_color);
-    }
-    
-    // Ligne 4: Luminosité ambiante
-    uint16_t line4_y = line3_y + 30;
-    uint16_t light_color = color_green;
-    if (light_level < 300) light_color = color_red;
-    else if (light_level < 700) light_color = color_yellow;
-    uint16_t light_width = (light_level * 200) / 1023;
-    if (light_width > 200) light_width = 200;
-    st7789_fill_rect(10, line4_y, 200, 20, color_gray);
-    if (light_width > 0) {
-        st7789_fill_rect(10, line4_y, light_width, 20, light_color);
-    }
-    
-    // Ligne 5: LED Backlight status
-    uint16_t line5_y = line4_y + 30;
-    uint16_t led_width = (led_brightness * 200) / 255;
-    if (led_width > 200) led_width = 200;
-    st7789_fill_rect(10, line5_y, 200, 20, color_gray);
-    if (led_width > 0) {
-        st7789_fill_rect(10, line5_y, led_width, 20, color_blue);
-    }
-    
-    // Ligne 6: Indicateur de statut (carré coloré)
-    uint16_t line6_y = line5_y + 30;
-    uint16_t status_color = color_green;  // Vert = OK
-    st7789_fill_rect(10, line6_y, 30, 30, status_color);
-    
-    // Pied de page (en bas)
-    uint16_t footer_y = ST7789_HEIGHT - 25;
-    st7789_fill_rect(5, footer_y, 230, 20, color_dark_gray);
-    // Bordure en haut du pied de page
-    st7789_fill_rect(5, footer_y, 230, 2, color_blue);
+    display_force_ui_reset = 1;
+    display_update_partial(1);
 }
 
 // Initialiser UART
 void uart_init(void) {
+    UCSR0A |= (1 << U2X0);
     UBRR0H = (uint8_t)(UART_UBRR >> 8);
     UBRR0L = (uint8_t)(UART_UBRR & 0xFF);
     
@@ -748,7 +730,7 @@ int main(void) {
     // Initialiser le débogage (utilise maintenant l'UART principal)
     debug_init();
     debug_print("\r\n=== ATmega328P Light Controller ===\r\n");
-    debug_print("UART Baud: 9600\r\n");
+    debug_print("UART Baud: 57600 (U2X)\r\n");
     debug_print("Boot sequence started...\r\n");
     
     // Initialiser les périphériques
@@ -789,75 +771,90 @@ int main(void) {
     
     // Boucle principale - optimisée pour la réactivité
     while (1) {
-        // Traiter les commandes UART (déferrées depuis l'ISR pour éviter blocage SPI)
-        if (uart_cmd_pending) {
+        // Traiter toutes les lignes UART mises en file par l'ISR (évite perte entre paquets image)
+        for (;;) {
+            uint8_t cnt;
+            cli();
+            cnt = uart_line_q_count;
+            sei();
+            if (cnt == 0) {
+                break;
+            }
+            cli();
+            uint8_t out = uart_line_q_out;
+            uint8_t len = uart_line_len[out];
+            uart_line_q_out = (uint8_t)((uart_line_q_out + 1u) % UART_LINE_QUEUE_DEPTH);
+            uart_line_q_count--;
+            sei();
+            if (len == 0 || len >= UART_BUFFER_SIZE) {
+                continue;
+            }
+            memcpy((void*)uart_buffer, (const void*)uart_line_queue[out], len);
+            uart_buffer_index = len;
             processUartCommand();
         }
         
-        // Lire la luminosité toutes les ~20ms (au lieu de 100ms)
-        static uint8_t adc_counter = 0;
-        adc_counter++;
-        if (adc_counter >= 5) {  // ~100ms (5 * 20ms) pour l'ADC
-            adc_counter = 0;
-            light_level = adc_read();
-            // LED: priorité ESP32 (display_backlight) si commande récente, sinon logique locale
-            if (esp32_backlight_ticks > 0) {
-                esp32_backlight_ticks--;
+        // Économie : dalle en SLPIN → pas d’ADC/UI périodiques, MCU en veille IDLE (UART RX réveille).
+        if (!tft_panel_asleep) {
+            // Lire la luminosité toutes les ~20ms (au lieu de 100ms)
+            static uint8_t adc_counter = 0;
+            adc_counter++;
+            if (adc_counter >= 5) {  // ~100ms (5 * 20ms) pour l'ADC
+                adc_counter = 0;
+                light_level = adc_read();
+                if (esp32_backlight_ticks > 0) {
+                    esp32_backlight_ticks--;
+                }
                 set_led_brightness(display_backlight_enabled ? display_backlight_brightness : 0);
-            } else {
-                // ADC >= 500 = clair -> LED OFF. ADC < 500 = sombre -> LED ON
-#if LIGHT_SENSOR_INVERTED
-                if (light_level >= 500) {
-                    set_led_brightness(255);  // Inversé: haut = sombre
+            }
+
+            static uint16_t ui_counter = 0;
+            static uint16_t last_shown_light_ui = 0xFFFF;
+            ui_counter++;
+            if (ui_counter >= 10) {
+                ui_counter = 0;
+                uint16_t diff;
+                if (light_level > last_shown_light_ui) {
+                    diff = light_level - last_shown_light_ui;
                 } else {
-                    set_led_brightness(0);
+                    diff = last_shown_light_ui - light_level;
                 }
-#else
-                if (light_level >= 500) {
-                    set_led_brightness(0);    // Clair -> LED OFF
-                } else {
-                    set_led_brightness(255);  // Sombre -> LED ON
+                if (diff >= 5 || last_shown_light_ui == 0xFFFF) {
+                    display_simple_info();
+                    last_shown_light_ui = light_level;
                 }
-#endif
             }
-        }
-        
-        // Rafraîchissement d'affichage de la lumière - toutes les ~200ms
-        static uint16_t ui_counter = 0;
-        static uint16_t last_shown_light_ui = 0xFFFF;  // Initialiser à une valeur invalide pour forcer le premier affichage
-        ui_counter++;
-        if (ui_counter >= 10) {  // ~200 ms (10 * 20 ms)
-            ui_counter = 0;
-            uint16_t diff;
-            if (light_level > last_shown_light_ui) {
-                diff = light_level - last_shown_light_ui;
+
+            static uint16_t debug_counter = 0;
+            debug_counter++;
+            if (debug_counter >= 250) {
+                debug_counter = 0;
+                debug_print("[LIGHT] Level: ");
+                debug_print_dec(light_level);
+                debug_print(" (0x");
+                debug_print_hex((uint8_t)(light_level >> 8));
+                debug_print_hex((uint8_t)(light_level & 0xFF));
+                debug_print(")\r\n");
+            }
+
+            _delay_ms(20);
+        } else {
+            uint8_t qcnt;
+            cli();
+            qcnt = uart_line_q_count;
+            sei();
+            if (qcnt == 0) {
+                /* Dalle en veille : garantir PWM backlight à 0 (boucle IDLE sans passage ADC). */
+                set_led_brightness(0);
+                set_sleep_mode(SLEEP_MODE_IDLE);
+                sleep_enable();
+                sei();
+                sleep_cpu();
+                sleep_disable();
             } else {
-                diff = last_shown_light_ui - light_level;
-            }
-            // Mettre à jour l'affichage simplifié si variation >= 5 ou première fois
-            if (diff >= 5 || last_shown_light_ui == 0xFFFF) {
-                display_simple_info();  // Afficher toutes les infos (inclut la luminosité)
-                last_shown_light_ui = light_level;
+                _delay_ms(1);
             }
         }
-        
-        // L'ESP32 demande la luminosité via CMD_READ_LIGHT toutes les 2 s — pas besoin d'envoi périodique
-        
-        // Envoyer un message de debug toutes les 5 secondes (réduit pour moins de spam)
-        static uint16_t debug_counter = 0;
-        debug_counter++;
-        if (debug_counter >= 250) {  // ~5 secondes (250 * 20ms)
-            debug_counter = 0;
-            debug_print("[LIGHT] Level: ");
-            debug_print_dec(light_level);
-            debug_print(" (0x");
-            debug_print_hex((uint8_t)(light_level >> 8));
-            debug_print_hex((uint8_t)(light_level & 0xFF));
-            debug_print(")\r\n");
-        }
-        
-        // Délai réduit pour améliorer la réactivité (20ms au lieu de 100ms)
-        _delay_ms(20);
     }
     
     return 0;
@@ -925,7 +922,7 @@ void display_light_level_on_screen(uint16_t value) {
     
     // Couleurs simples
     uint16_t black = 0x0000;
-    uint16_t cyan  = 0x07FF;
+    uint16_t fg_gray = 0x8430;  // Même neutre que UI_TEXT_HI
     
     // Afficher la luminosité juste sous la ligne "CONNECTION : ..."
     // text_y = 40, conn_y = text_y + 12 = 52 → LIGHT vers ~64
@@ -937,8 +934,7 @@ void display_light_level_on_screen(uint16_t value) {
     // Effacer uniquement la zone du texte (pas toute la largeur)
     st7789_fill_rect(x, y, w, h, black);
     
-    // Dessiner le texte "LIGHT: xxxx" en cyan
-    st7789_draw_text(x, y, text, cyan, black);
+    st7789_draw_text(x, y, text, fg_gray, black);
     
     // S'assurer que le reste de l'écran en bas est noir (protection contre le bruit)
     // Effacer de y+h jusqu'en bas de l'écran
@@ -949,25 +945,185 @@ void display_light_level_on_screen(uint16_t value) {
     }
 }
 
-// Constantes pour les zones d'affichage (mise à jour partielle)
-#define ZONE_LINE_H 16
-#define ZONE_W 280
-#define ZONE_X 20
-#define PANEL_X 5
-#define PANEL_Y 30
-#define PANEL_W 310
-#define PANEL_H 175
-#define INNER_BG 0x0000     /* Noir - fond du panneau */
-#define BORDER_GRAY 0x4208  /* Gris foncé - bordures et séparateur */
-#define WHITE_COL 0xFFFF
-#define BLACK_COL 0x0000
-#define CONTENT_HEIGHT (ZONE_LINE_H + 2 + 1 + 2 + (7 * ZONE_LINE_H))  // 133
+/* ─── UI : style sombre + accents or / USB vert ─── */
+#define UI_BG           0x0000
+#define UI_TEXT_HI      0xFFFF  // valeurs en blanc
+#define UI_TEXT_DIM     0xFEC0  // libellés type « or »
+#define UI_ACCENT       0xFD20  // barres / % ambiant
+#define UI_DIVIDER      0xBD20  // séparateur plus visible sur fond noir
+#define UI_VAL_USB      0x07F0
+#define UI_VAL_BLE      0x4DDF
+#define UI_VAL_IDLE     0xBDF7
 
-// Dessiner le panneau statique une seule fois (fond, bordures, séparateur)
+#define UI_CONTENT_Y    38
+#define UI_ROW_GAP      12
+#define UI_ROW_LRG      18
+#define UI_ROW_AMB      16
+#define UI_LBL_X        10
+#define UI_VAL_X        118
+#define UI_GUTTER_X     6
+#define UI_BAR_X        10
+#define UI_BAR_W        300
+#define UI_KEYS_CAP     17
+
+/* Bande réservée en bas quand une image plein écran est affichée (alignée avec ESP map_packed565). */
+#define UI_IMAGE_FOOTER_Y0  76
+#define UI_FOOTER_ROW_H     10
+
+static void ui_hrule(uint16_t y) {
+    if (y >= ST7789_HEIGHT) return;
+    st7789_fill_rect(8, y, ST7789_WIDTH - 16, 1, UI_DIVIDER);
+}
+
+static void fmt_pct(char* dst, uint8_t p) {
+    if (p >= 100) {
+        dst[0] = '1';
+        dst[1] = '0';
+        dst[2] = '0';
+        dst[3] = '\0';
+    } else if (p >= 10) {
+        dst[0] = (char)('0' + (p / 10));
+        dst[1] = (char)('0' + (p % 10));
+        dst[2] = '\0';
+    } else {
+        dst[0] = (char)('0' + p);
+        dst[1] = '\0';
+    }
+}
+
+static void fmt_u8(char* dst, uint8_t v) {
+    if (v >= 100) {
+        dst[0] = '0' + (v / 100);
+        dst[1] = '0' + ((v / 10) % 10);
+        dst[2] = '0' + (v % 10);
+        dst[3] = '\0';
+    } else if (v >= 10) {
+        dst[0] = '0' + (v / 10);
+        dst[1] = '0' + (v % 10);
+        dst[2] = '\0';
+    } else {
+        dst[0] = '0' + v;
+        dst[1] = '\0';
+    }
+}
+
+static void __attribute__((unused)) fmt_u16(char* dst, uint16_t v) {
+    char tmp[6];
+    uint8_t i = 0;
+    if (v == 0) {
+        dst[0] = '0';
+        dst[1] = '\0';
+        return;
+    }
+    while (v > 0 && i < 5) {
+        tmp[i++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    uint8_t j = 0;
+    while (i > 0) {
+        dst[j++] = tmp[--i];
+    }
+    dst[j] = '\0';
+}
+
+static void ui_clear_band(uint16_t y, uint16_t h) {
+    if (y + h > ST7789_HEIGHT) h = ST7789_HEIGHT - y;
+    st7789_fill_rect(0, y, ST7789_WIDTH, h, UI_BG);
+}
+
+static void ui_gutter_line(uint16_t y, uint16_t h) {
+    if (h < 1) return;
+    if (y + h > ST7789_HEIGHT) h = ST7789_HEIGHT - y;
+    st7789_fill_rect(UI_GUTTER_X, y, 1, h, UI_DIVIDER);
+}
+
+static void ui_row_two_col_color(uint16_t y, const char* lbl, const char* val, uint16_t val_color) {
+    ui_clear_band(y, UI_ROW_GAP);
+    ui_gutter_line(y, UI_ROW_GAP);
+    st7789_draw_text(UI_LBL_X, y + 3, lbl, UI_TEXT_DIM, UI_BG);
+    st7789_draw_text(UI_VAL_X, y + 3, val, val_color, UI_BG);
+}
+
+static void ui_row_two_col(uint16_t y, const char* lbl, const char* val) {
+    ui_row_two_col_color(y, lbl, val, UI_TEXT_HI);
+}
+
+static void ui_row_keys(uint16_t y, uint8_t kc) {
+    char nbuf[8];
+    char line2[22];
+    uint8_t pct = (uint8_t)(((uint16_t)kc * 100u) / (uint16_t)UI_KEYS_CAP);
+    ui_clear_band(y, UI_ROW_LRG);
+    ui_gutter_line(y, UI_ROW_LRG);
+    st7789_draw_text(UI_LBL_X, y + 2, "MAPPING", UI_TEXT_DIM, UI_BG);
+    nbuf[0] = '\0';
+    fmt_u8(nbuf, kc);
+    uint8_t p = 0;
+    const char* q = nbuf;
+    while (*q && p < sizeof(line2) - 8) line2[p++] = *q++;
+    line2[p++] = '/';
+    fmt_u8(nbuf, (uint8_t)UI_KEYS_CAP);
+    q = nbuf;
+    while (*q && p < sizeof(line2) - 6) line2[p++] = *q++;
+    line2[p++] = ' ';
+    line2[p++] = '(';
+    char pb[6];
+    fmt_pct(pb, pct);
+    q = pb;
+    while (*q && p < sizeof(line2) - 2) line2[p++] = *q++;
+    line2[p++] = '%';
+    line2[p++] = ')';
+    line2[p] = '\0';
+    st7789_draw_text(UI_VAL_X, y + 2, line2, UI_TEXT_HI, UI_BG);
+    st7789_draw_progress_bar(UI_BAR_X, y + 14, UI_BAR_W, 3, kc, UI_KEYS_CAP, UI_DIVIDER, UI_ACCENT);
+}
+
+static void ui_row_ambient(uint16_t y, uint16_t lv) {
+    char pctstr[8];
+    uint16_t capped = lv;
+    if (capped > 1023) capped = 1023;
+    uint8_t pct = (uint8_t)(((uint32_t)capped * 100u) / 1023u);
+
+    ui_clear_band(y, UI_ROW_AMB);
+    ui_gutter_line(y, UI_ROW_AMB);
+    st7789_draw_text(UI_LBL_X, y + 2, "LUM AMB", UI_TEXT_DIM, UI_BG);
+
+    uint8_t pi = 0;
+    fmt_pct(pctstr, pct);
+    while (pctstr[pi] && pi < sizeof(pctstr) - 2) pi++;
+    pctstr[pi++] = '%';
+    pctstr[pi] = '\0';
+    st7789_draw_text(UI_VAL_X, y + 2, pctstr, UI_ACCENT, UI_BG);
+
+    st7789_draw_progress_bar(UI_BAR_X, y + 11, UI_BAR_W, 2, capped, 1023u, UI_DIVIDER, UI_ACCENT);
+}
+
+static void ui_row_led(uint16_t y, uint8_t be, uint8_t pwm) {
+    char pctstr[8];
+    ui_clear_band(y, UI_ROW_GAP);
+    ui_gutter_line(y, UI_ROW_GAP);
+    st7789_draw_text(UI_LBL_X, y + 3, "ECRAN", UI_TEXT_DIM, UI_BG);
+
+    if (be) {
+        uint8_t bpct = (uint8_t)(((uint32_t)pwm * 100u + 127u) / 255u);
+        if (bpct > 100) bpct = 100;
+        st7789_draw_text(124, y + 3, "ON", UI_ACCENT, UI_BG);
+        uint8_t pi = 0;
+        fmt_pct(pctstr, bpct);
+        while (pctstr[pi] && pi < sizeof(pctstr) - 2) pi++;
+        pctstr[pi++] = '%';
+        pctstr[pi] = '\0';
+        st7789_draw_text(196, y + 3, pctstr, UI_TEXT_HI, UI_BG);
+    } else {
+        st7789_draw_text(96, y + 3, "OFF", UI_TEXT_DIM, UI_BG);
+        st7789_draw_text(196, y + 3, "0%", UI_TEXT_DIM, UI_BG);
+    }
+}
+
+// En-tête FlexPad + séparation, puis rangées de statut (profil … L.2)
 void display_init_panel(void) {
-    // Fond "propre" uniquement.
-    // Le contenu est redessiné ensuite par-dessus; on évite donc toute bordure/séparateur gris.
-    st7789_fill_screen(BLACK_COL);
+    st7789_fill_screen(UI_BG);
+    ui_draw_text_x2(10, 2, "FlexPad", UI_TEXT_DIM, UI_BG);
+    ui_hrule(35);
 }
 
 // Helper: mettre une chaîne en majuscules dans out (max len-1 chars + null)
@@ -981,6 +1137,127 @@ static void to_upper_str(const char* in, char* out, uint8_t len) {
     out[i] = '\0';
 }
 
+static void footer_paint_img_row(uint16_t* py, const char* lbl, const char* val, uint16_t valcol) {
+    st7789_fill_rect(0, *py, ST7789_WIDTH, UI_FOOTER_ROW_H, UI_BG);
+    ui_gutter_line(*py, UI_FOOTER_ROW_H);
+    st7789_draw_text(UI_LBL_X, (uint16_t)(*py + 1), lbl, UI_TEXT_DIM, UI_BG);
+    st7789_draw_text(UI_VAL_X, (uint16_t)(*py + 1), val, valcol, UI_BG);
+    *py = (uint16_t)(*py + UI_FOOTER_ROW_H);
+}
+
+static void footer_keys_compact_line(char* line2, uint8_t line2_sz, uint8_t kc) {
+    char nbuf[8];
+    uint8_t pct = (uint8_t)(((uint16_t)kc * 100u) / (uint16_t)UI_KEYS_CAP);
+    uint8_t p = 0;
+    nbuf[0] = '\0';
+    fmt_u8(nbuf, kc);
+    const char* q = nbuf;
+    while (*q && p < line2_sz - 8) line2[p++] = *q++;
+    line2[p++] = '/';
+    fmt_u8(nbuf, (uint8_t)UI_KEYS_CAP);
+    q = nbuf;
+    while (*q && p < line2_sz - 6) line2[p++] = *q++;
+    line2[p++] = ' ';
+    line2[p++] = '(';
+    char pb[6];
+    fmt_pct(pb, pct);
+    q = pb;
+    while (*q && p < line2_sz - 2) line2[p++] = *q++;
+    line2[p++] = '%';
+    line2[p++] = ')';
+    line2[p] = '\0';
+}
+
+/* Statut complet en bande basse par-dessus une image (zone non peinte par l'ESP32). */
+void display_draw_image_footer(void) {
+    char valbuf[17];
+    char line2[22];
+    uint16_t y = UI_IMAGE_FOOTER_Y0;
+    if (UI_IMAGE_FOOTER_Y0 + 8 >= ST7789_HEIGHT) {
+        return;
+    }
+    st7789_fill_rect(0, UI_IMAGE_FOOTER_Y0, ST7789_WIDTH, (uint16_t)(ST7789_HEIGHT - UI_IMAGE_FOOTER_Y0), UI_BG);
+    ui_hrule(UI_IMAGE_FOOTER_Y0);
+    y = (uint16_t)(UI_IMAGE_FOOTER_Y0 + 2);
+
+    const char* profile_ptr = (char*)display_profile;
+    if (!profile_ptr || !profile_ptr[0]) profile_ptr = "PROFIL 1";
+    to_upper_str(profile_ptr, valbuf, sizeof(valbuf));
+    footer_paint_img_row(&y, "PROFIL", valbuf, UI_TEXT_HI);
+
+    const char* conn_status = "IDLE";
+    uint16_t conn_col = UI_VAL_IDLE;
+    if (strcmp((char*)display_output_mode, "usb") == 0) {
+        conn_status = "USB";
+        conn_col = UI_VAL_USB;
+    } else if (strcmp((char*)display_output_mode, "bluetooth") == 0) {
+        conn_status = "BLUETOOTH";
+        conn_col = UI_VAL_BLE;
+    }
+    footer_paint_img_row(&y, "LIAISON", conn_status, conn_col);
+
+    const char* device_ptr = (char*)display_connected_device;
+    if (!device_ptr || !device_ptr[0]) {
+        device_ptr = (strcmp((char*)display_output_mode, "bluetooth") == 0) ? "SANS FIL" : "FILAIRE";
+    }
+    to_upper_str(device_ptr, valbuf, sizeof(valbuf));
+    footer_paint_img_row(&y, "HOTE", valbuf, UI_TEXT_HI);
+
+    const char* last_key_ptr = (char*)display_last_key;
+    const char* last_key_display = (!last_key_ptr || !last_key_ptr[0]) ? "-" : last_key_ptr;
+    to_upper_str(last_key_display, valbuf, sizeof(valbuf));
+    footer_paint_img_row(&y, "TOUCHE", valbuf, UI_TEXT_HI);
+
+    footer_keys_compact_line(line2, sizeof(line2), display_keys_count);
+    footer_paint_img_row(&y, "MAPPING", line2, UI_TEXT_HI);
+
+    uint16_t lv = light_level;
+    uint16_t capped = lv > 1023 ? 1023 : lv;
+    uint8_t pct = (uint8_t)(((uint32_t)capped * 100u) / 1023u);
+    char pctstr[8];
+    uint8_t pi = 0;
+    fmt_pct(pctstr, pct);
+    while (pctstr[pi] && pi < sizeof(pctstr) - 2) pi++;
+    pctstr[pi++] = '%';
+    pctstr[pi] = '\0';
+    footer_paint_img_row(&y, "LUM AMB", pctstr, UI_ACCENT);
+
+    uint8_t be = display_backlight_enabled ? 1 : 0;
+    uint8_t pwm = display_backlight_brightness;
+    char ledline[16];
+    if (be) {
+        uint8_t bpct = (uint8_t)(((uint32_t)pwm * 100u + 127u) / 255u);
+        if (bpct > 100) bpct = 100;
+        char pctled[6];
+        fmt_pct(pctled, bpct);
+        uint8_t j = 0;
+        ledline[j++] = 'O';
+        ledline[j++] = 'N';
+        ledline[j++] = ' ';
+        const char* q = pctled;
+        while (*q && j < sizeof(ledline) - 2) ledline[j++] = *q++;
+        ledline[j++] = '%';
+        ledline[j] = '\0';
+    } else {
+        ledline[0] = 'O';
+        ledline[1] = 'F';
+        ledline[2] = 'F';
+        ledline[3] = '\0';
+    }
+    footer_paint_img_row(&y, "ECRAN", ledline, UI_TEXT_HI);
+
+    const char* c1 = (char*)display_custom1;
+    const char* c2 = (char*)display_custom2;
+    if (c1 && c1[0]) {
+        to_upper_str(c1, valbuf, sizeof(valbuf));
+        footer_paint_img_row(&y, "L.1", valbuf, UI_TEXT_HI);
+    }
+    if (c2 && c2[0]) {
+        to_upper_str(c2, valbuf, sizeof(valbuf));
+        footer_paint_img_row(&y, "L.2", valbuf, UI_TEXT_HI);
+    }
+}
+
 // Mise à jour partielle: ne redessine que les zones dont la valeur a changé
 // force_key_device=1: force toujours la mise à jour des zones dernière touche et appareil
 void display_update_partial(uint8_t force_key_device) {
@@ -991,155 +1268,145 @@ void display_update_partial(uint8_t force_key_device) {
     static char prev_last_key[16] = "";
     static uint8_t prev_keys_count = 255;
     static uint8_t prev_backlight_enabled = 255;
+    static uint8_t prev_backlight_pwm = 255;
     static uint16_t prev_light_level = 0xFFFF;
-    
-    uint16_t start_y = PANEL_Y + ((PANEL_H - CONTENT_HEIGHT) / 2) + 1;
-    
+    static char prev_c1[32] = "";
+    static char prev_c2[32] = "";
+
+    if (image_receiving) {
+        return;
+    }
+    if (strcmp((char*)display_mode, "image") == 0 || strcmp((char*)display_mode, "gif") == 0) {
+        return;
+    }
+
+    if (display_force_ui_reset) {
+        panel_drawn = 0;
+        prev_profile[0] = '\0';
+        prev_output_mode[0] = '\0';
+        prev_connected_device[0] = '\0';
+        prev_last_key[0] = '\0';
+        prev_keys_count = 255;
+        prev_backlight_enabled = 255;
+        prev_backlight_pwm = 255;
+        prev_light_level = 0xFFFF;
+        prev_c1[0] = '\0';
+        prev_c2[0] = '\0';
+        display_force_ui_reset = 0;
+    }
+
     if (!panel_drawn) {
         display_init_panel();
         panel_drawn = 1;
     }
-    
-    uint16_t y_profile = start_y;
-    uint16_t y_mode = start_y + ZONE_LINE_H + 2 + 1 + 2;
-    uint16_t y_device = y_mode + ZONE_LINE_H;
-    uint16_t y_last_key = y_device + ZONE_LINE_H;
-    uint16_t y_keys = y_last_key + ZONE_LINE_H;
-    uint16_t y_backlight = y_keys + ZONE_LINE_H;
-    uint16_t y_light = y_backlight + ZONE_LINE_H;
-    
-    char buf[48];
-    uint8_t pos;
-    const char* p;
-    
-    // Zone 1: Profil
+
+    const uint16_t y0 = UI_CONTENT_Y;
+    const uint16_t y_profile = y0;
+    const uint16_t y_lia = y_profile + UI_ROW_GAP;
+    const uint16_t y_host = y_lia + UI_ROW_GAP;
+    const uint16_t y_key = y_host + UI_ROW_GAP;
+    const uint16_t y_map = y_key + UI_ROW_GAP;
+    const uint16_t y_amb = y_map + UI_ROW_LRG;
+    const uint16_t y_led = y_amb + UI_ROW_AMB;
+
+    char valbuf[17];
     const char* profile_ptr = (char*)display_profile;
-    if (!profile_ptr || !profile_ptr[0]) profile_ptr = "Profile 1";
+    if (!profile_ptr || !profile_ptr[0]) profile_ptr = "PROFIL 1";
     if (strcmp(profile_ptr, prev_profile) != 0) {
         strncpy((char*)prev_profile, profile_ptr, 31);
         prev_profile[31] = '\0';
-        to_upper_str(profile_ptr, buf, sizeof(buf));
-        st7789_fill_rect(ZONE_X, y_profile, ZONE_W, ZONE_LINE_H, INNER_BG);
-        st7789_draw_text(ZONE_X, y_profile, buf, WHITE_COL, INNER_BG);
+        to_upper_str(profile_ptr, valbuf, sizeof(valbuf));
+        ui_row_two_col(y_profile, "PROFIL", valbuf);
     }
-    
-    // Zone 2: Mode de connexion
+
     const char* conn_status = "IDLE";
-    if (strcmp((char*)display_output_mode, "usb") == 0) conn_status = "USB";
-    else if (strcmp((char*)display_output_mode, "bluetooth") == 0) conn_status = "BLUETOOTH";
+    uint16_t conn_color = UI_VAL_IDLE;
+    if (strcmp((char*)display_output_mode, "usb") == 0) {
+        conn_status = "USB";
+        conn_color = UI_VAL_USB;
+    } else if (strcmp((char*)display_output_mode, "bluetooth") == 0) {
+        conn_status = "BLUETOOTH";
+        conn_color = UI_VAL_BLE;
+    }
     if (strcmp((char*)display_output_mode, prev_output_mode) != 0) {
         strncpy((char*)prev_output_mode, (char*)display_output_mode, 15);
         prev_output_mode[15] = '\0';
-        pos = 0;
-        p = "MODE DE CONNECTION : ";
-        while (*p && pos < 47) buf[pos++] = *p++;
-        p = conn_status;
-        while (*p && pos < 47) buf[pos++] = *p++;
-        buf[pos] = '\0';
-        st7789_fill_rect(ZONE_X, y_mode, ZONE_W, ZONE_LINE_H, INNER_BG);
-        st7789_draw_text(ZONE_X, y_mode, buf, WHITE_COL, INNER_BG);
+        ui_row_two_col_color(y_lia, "LIAISON", conn_status, conn_color);
     }
-    
-    // Zone 3: Appareil connecté (fallback: déduire de display_output_mode si vide)
+
     const char* device_ptr = (char*)display_connected_device;
     if (!device_ptr || !device_ptr[0]) {
-        device_ptr = (strcmp((char*)display_output_mode, "bluetooth") == 0) ? "Bluetooth" : "Wired";
+        device_ptr = (strcmp((char*)display_output_mode, "bluetooth") == 0) ? "SANS FIL" : "FILAIRE";
     }
     if (force_key_device || strcmp(device_ptr, prev_connected_device) != 0) {
         strncpy((char*)prev_connected_device, device_ptr, 31);
         prev_connected_device[31] = '\0';
-        pos = 0;
-        p = "APPAREIL : ";
-        while (*p && pos < 47) buf[pos++] = *p++;
-        p = device_ptr;
-        while (*p && pos < 47) {
-            char c = *p++;
-            if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
-            buf[pos++] = c;
-        }
-        buf[pos] = '\0';
-        st7789_fill_rect(ZONE_X, y_device, ZONE_W, ZONE_LINE_H, INNER_BG);
-        st7789_draw_text(ZONE_X, y_device, buf, WHITE_COL, INNER_BG);
+        to_upper_str(device_ptr, valbuf, sizeof(valbuf));
+        ui_row_two_col(y_host, "HOTE", valbuf);
     }
-    
-    // Zone 4: Dernière touche
+
     const char* last_key_ptr = (char*)display_last_key;
-    const char* last_key_display = (!last_key_ptr || !last_key_ptr[0]) ? "AUCUNE" : last_key_ptr;
+    const char* last_key_display = (!last_key_ptr || !last_key_ptr[0]) ? "-" : last_key_ptr;
     if (force_key_device || strcmp(last_key_display, prev_last_key) != 0) {
         strncpy((char*)prev_last_key, last_key_display, 15);
         prev_last_key[15] = '\0';
-        pos = 0;
-        p = "TOUCHE : ";
-        while (*p && pos < 47) buf[pos++] = *p++;
-        p = last_key_display;
-        while (*p && pos < 47) {
-            char c = *p++;
-            if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
-            buf[pos++] = c;
-        }
-        buf[pos] = '\0';
-        st7789_fill_rect(ZONE_X, y_last_key, ZONE_W, ZONE_LINE_H, INNER_BG);
-        st7789_draw_text(ZONE_X, y_last_key, buf, WHITE_COL, INNER_BG);
+        to_upper_str(last_key_display, valbuf, sizeof(valbuf));
+        ui_row_two_col(y_key, "TOUCHE", valbuf);
     }
-    
-    // Zone 5: Touches configurées
+
     uint8_t kc = display_keys_count;
     if (kc != prev_keys_count) {
         prev_keys_count = kc;
-        pos = 0;
-        p = "TOUCHE CONFIGURE : ";
-        while (*p && pos < 47) buf[pos++] = *p++;
-        if (kc == 0) buf[pos++] = '0';
-        else {
-            char nb[4];
-            uint8_t i = 0;
-            uint8_t n = kc;
-            while (n > 0 && i < 3) { nb[i++] = '0' + (n % 10); n /= 10; }
-            while (i > 0 && pos < 47) buf[pos++] = nb[--i];
-        }
-        buf[pos++] = '/'; buf[pos++] = '1'; buf[pos++] = '7';
-        buf[pos] = '\0';
-        st7789_fill_rect(ZONE_X, y_keys, ZONE_W, ZONE_LINE_H, INNER_BG);
-        st7789_draw_text(ZONE_X, y_keys, buf, WHITE_COL, INNER_BG);
+        ui_row_keys(y_map, kc);
     }
-    
-    // Zone 6: Rétro-éclairage
-    uint8_t be = display_backlight_enabled ? 1 : 0;
-    if (be != prev_backlight_enabled) {
-        prev_backlight_enabled = be;
-        pos = 0;
-        p = "RETRO-ECLAIRAGE : ";
-        while (*p && pos < 47) buf[pos++] = *p++;
-        if (be) { buf[pos++] = 'O'; buf[pos++] = 'N'; }
-        else { buf[pos++] = 'O'; buf[pos++] = 'F'; buf[pos++] = 'F'; }
-        buf[pos] = '\0';
-        st7789_fill_rect(ZONE_X, y_backlight, ZONE_W, ZONE_LINE_H, INNER_BG);
-        st7789_draw_text(ZONE_X, y_backlight, buf, WHITE_COL, INNER_BG);
-    }
-    
-    // Zone 7: Luminosité
+
     uint16_t lv = light_level;
     if (lv != prev_light_level) {
         prev_light_level = lv;
-        pos = 0;
-        p = "LUMINOSITE : ";
-        while (*p && pos < 47) buf[pos++] = *p++;
-        if (lv == 0) buf[pos++] = '0';
-        else {
-            char nb[5];
-            uint8_t i = 0;
-            uint16_t n = lv;
-            while (n > 0 && i < 4) { nb[i++] = '0' + (n % 10); n /= 10; }
-            while (i > 0 && pos < 47) buf[pos++] = nb[--i];
+        ui_row_ambient(y_amb, lv);
+    }
+
+    uint8_t be = display_backlight_enabled ? 1 : 0;
+    uint8_t pwm = display_backlight_brightness;
+    if (be != prev_backlight_enabled || pwm != prev_backlight_pwm) {
+        prev_backlight_enabled = be;
+        prev_backlight_pwm = pwm;
+        ui_row_led(y_led, be, pwm);
+    }
+
+    const char* cz1 = (char*)display_custom1;
+    const char* cz2 = (char*)display_custom2;
+    uint16_t y_c1 = (uint16_t)(y_led + UI_ROW_GAP);
+    uint16_t y_c2 = (uint16_t)(y_c1 + UI_ROW_GAP);
+    if (strcmp(cz1, prev_c1) != 0 || strcmp(cz2, prev_c2) != 0) {
+        strncpy(prev_c1, cz1, 31);
+        prev_c1[31] = '\0';
+        strncpy(prev_c2, cz2, 31);
+        prev_c2[31] = '\0';
+        if (cz1[0]) {
+            to_upper_str(cz1, valbuf, sizeof(valbuf));
+            ui_row_two_col_color(y_c1, "L.1", valbuf, UI_TEXT_HI);
+        } else {
+            ui_clear_band(y_c1, UI_ROW_GAP);
         }
-        buf[pos] = '\0';
-        st7789_fill_rect(ZONE_X, y_light, ZONE_W, ZONE_LINE_H, INNER_BG);
-        st7789_draw_text(ZONE_X, y_light, buf, WHITE_COL, INNER_BG);
+        if (cz2[0]) {
+            to_upper_str(cz2, valbuf, sizeof(valbuf));
+            ui_row_two_col_color(y_c2, "L.2", valbuf, UI_TEXT_HI);
+        } else {
+            ui_clear_band(y_c2, UI_ROW_GAP);
+        }
     }
 }
 
 // Alias pour compatibilité - appelle la mise à jour partielle
 void display_simple_info(void) {
+    if (image_receiving) {
+        return;
+    }
+    if (strcmp((char*)display_mode, "image") == 0 || strcmp((char*)display_mode, "gif") == 0) {
+        display_draw_image_footer();
+        return;
+    }
     display_update_partial(0);
 }
 
@@ -1192,17 +1459,24 @@ void processUartCommand() {
                 LOG_INFO("[UART] Setting LED brightness: ");
                 debug_print_dec(brightness);
                 debug_print("\r\n");
-                set_led_brightness(brightness);
-                st7789_update_display();
+                if (tft_panel_asleep) {
+                    set_led_brightness(0);
+                } else {
+                    set_led_brightness(brightness);
+                    st7789_update_display();
+                }
             }
             break;
             
         case CMD_UPDATE_DISPLAY:
-            st7789_update_display();
+            if (!tft_panel_asleep) {
+                st7789_update_display();
+            }
             break;
             
-        case CMD_SET_DISPLAY_DATA:
+        case CMD_SET_DISPLAY_DATA: {
             // Parser les données d'affichage
+            static char last_disp_mode[16] = "data";
             if (uart_buffer_index > 1) {
                 uint8_t pos = 1;
                 if (pos < uart_buffer_index) {
@@ -1278,11 +1552,51 @@ void processUartCommand() {
                         display_connected_device[0] = '\0';
                     }
                 }
-                
-                // Mise à jour partielle (force last_key et device à chaque réception UART)
-                display_update_partial(1);
+
+                if (pos < uart_buffer_index) {
+                    uint8_t c1len = uart_buffer[pos];
+                    if (c1len <= 21 && pos + 1u + c1len <= uart_buffer_index) {
+                        pos++;
+                        for (uint8_t i = 0; i < c1len; i++) {
+                            display_custom1[i] = uart_buffer[pos + i];
+                        }
+                        display_custom1[c1len] = '\0';
+                        pos = (uint8_t)(pos + c1len);
+                    }
+                }
+                if (pos < uart_buffer_index) {
+                    uint8_t c2len = uart_buffer[pos];
+                    if (c2len <= 21 && pos + 1u + c2len <= uart_buffer_index) {
+                        pos++;
+                        for (uint8_t i = 0; i < c2len; i++) {
+                            display_custom2[i] = uart_buffer[pos + i];
+                        }
+                        display_custom2[c2len] = '\0';
+                        pos = (uint8_t)(pos + c2len);
+                    }
+                }
+
+                const uint8_t was_bitmap = (strcmp(last_disp_mode, "image") == 0 || strcmp(last_disp_mode, "gif") == 0) ? 1u : 0u;
+                if (strcmp((char*)display_mode, "data") == 0 && was_bitmap) {
+                    display_force_ui_reset = 1;
+                }
+                strncpy(last_disp_mode, (char*)display_mode, 15);
+                last_disp_mode[15] = '\0';
+
+                /* Toute écriture SPI sort le ST7789 de SLPIN — ne pas rafraîchir tant que veille volontaire. */
+                if (!tft_panel_asleep) {
+                    if (strcmp((char*)display_mode, "data") == 0) {
+                        if (!image_receiving) {
+                            display_update_partial(1);
+                        }
+                    } else if ((strcmp((char*)display_mode, "image") == 0 || strcmp((char*)display_mode, "gif") == 0) && !image_receiving) {
+                        display_draw_image_footer();
+                    }
+                }
+                apply_display_backlight_from_esp32_consider_sleep();
             }
             break;
+        }
             
         case CMD_SET_LAST_KEY:
             if (uart_buffer_index >= 2) {
@@ -1299,14 +1613,63 @@ void processUartCommand() {
                     if (pos + 2 <= uart_buffer_index) {
                         display_backlight_enabled = uart_buffer[pos++];
                         display_backlight_brightness = uart_buffer[pos++];
-                        esp32_backlight_ticks = 100;  // 10 s de priorité ESP32 (~100 * 100ms)
-                        set_led_brightness(display_backlight_enabled ? display_backlight_brightness : 0);
                     }
-                    display_update_partial(1);
+                    if (!tft_panel_asleep) {
+                        if (!image_receiving && strcmp((char*)display_mode, "data") == 0) {
+                            display_update_partial(1);
+                        } else if (!image_receiving && (strcmp((char*)display_mode, "image") == 0 || strcmp((char*)display_mode, "gif") == 0)) {
+                            display_draw_image_footer();
+                        }
+                    }
+                    apply_display_backlight_from_esp32_consider_sleep();
                 }
             }
             break;
             
+        case CMD_PREPARE_SLEEP:
+            if (display_initialized) {
+                st7789_write_cmd(ST7789_SLPIN);
+                _delay_ms(20);
+            } else {
+                backlight_shutdown_for_panel_sleep();
+            }
+            break;
+
+        case CMD_RESUME_FROM_SLEEP: {
+            /* Si SET_DISPLAY_DATA est passé pendant SLPIN, le dessin a été sauté : réveil seul ne repeint pas. */
+            uint8_t did_wake_panel = 0;
+            // Panneau en SLPIN : sortie explicite (ne pas passer par st7789_write_cmd(SLPIN)).
+            if (tft_panel_asleep && display_initialized) {
+                did_wake_panel = 1;
+                ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+                ST7789_DC_PORT &= ~(1 << ST7789_DC_PIN);
+                spi_write(ST7789_SLPOUT);
+                ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+                _delay_ms(120);
+                tft_panel_asleep = 0;
+                st7789_write_cmd(ST7789_DISPON);
+                _delay_ms(20);
+            }
+            if (uart_buffer_index >= 3) {
+                display_backlight_enabled = uart_buffer[1] ? 1 : 0;
+                display_backlight_brightness = uart_buffer[2];
+                esp32_backlight_ticks = 200;
+                set_led_brightness(display_backlight_enabled ? display_backlight_brightness : 0);
+            }
+            if (display_initialized && !tft_panel_asleep && did_wake_panel) {
+                if (strcmp((char*)display_mode, "data") == 0) {
+                    if (!image_receiving) {
+                        display_force_ui_reset = 1;
+                        display_update_partial(1);
+                    }
+                } else if ((strcmp((char*)display_mode, "image") == 0 || strcmp((char*)display_mode, "gif") == 0) && !image_receiving) {
+                    display_draw_image_footer();
+                }
+                apply_display_backlight_from_esp32_consider_sleep();
+            }
+            break;
+        }
+
         case CMD_SET_ATMEGA_DEBUG:
             if (uart_buffer_index >= 2) {
                 debug_enabled = uart_buffer[1];
@@ -1330,82 +1693,88 @@ void processUartCommand() {
             break;
             
         case CMD_SET_DISPLAY_IMAGE:
-            if (uart_buffer_index >= 3) {
-                image_expected_size = uart_buffer[1] | (uart_buffer[2] << 8);
-                image_received_bytes = 0;
-                image_chunk_index = 0;
-                image_receiving = 1;
-                LOG_INFO("[UART] Starting image reception, size: ");
-                debug_print_dec(image_expected_size);
-                debug_print("\r\n");
+            if (tft_panel_asleep) {
+                break;
             }
+            image_expected_size = (uint32_t)ST7789_WIDTH * (uint32_t)ST7789_HEIGHT * 2u;
+            image_received_bytes = 0;
+            image_chunk_index = 0;
+            image_receiving = 1;
+            LOG_INFO("[UART] Image RX start bytes=");
+            debug_print_u32(image_expected_size);
+            debug_print("\r\n");
             break;
-            
+
         case CMD_SET_DISPLAY_IMAGE_CHUNK:
+            if (tft_panel_asleep) {
+                image_receiving = 0;
+                break;
+            }
             if (image_receiving && uart_buffer_index >= 4) {
-                uint16_t chunk_idx = uart_buffer[1] | (uart_buffer[2] << 8);
                 uint8_t chunk_size = uart_buffer[3];
-                
-                if (chunk_size > 0 && chunk_size <= IMAGE_CHUNK_SIZE && 
+
+                if (chunk_size >= 2 && chunk_size <= IMAGE_CHUNK_SIZE &&
+                    (chunk_size % 2u) == 0 &&
                     (uart_buffer_index - 4) >= chunk_size) {
-                    
-                    // Calculer la position dans l'image
-                    uint16_t byte_offset = chunk_idx * IMAGE_CHUNK_SIZE;
-                    uint16_t pixel_offset = byte_offset / 2;
-                    uint16_t x = pixel_offset % ST7789_WIDTH;
-                    uint16_t y = pixel_offset / ST7789_WIDTH;
-                    uint16_t pixels_in_chunk = chunk_size / 2;
-                    uint16_t end_x = x + pixels_in_chunk;
-                    
-                    if (end_x > ST7789_WIDTH) {
-                        end_x = ST7789_WIDTH;
-                        pixels_in_chunk = ST7789_WIDTH - x;
-                    }
-                    
-                    // Dessiner le chunk sur l'écran
-                    st7789_set_window(x, y, end_x - 1, y);
-                    ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
-                    ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
-                    for (uint8_t i = 0; i < chunk_size; i++) {
-                        spi_write(uart_buffer[4 + i]);
-                    }
-                    ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
-                    
-                    image_received_bytes += chunk_size;
-                    image_chunk_index++;
-                    
-                    if (image_received_bytes >= image_expected_size) {
-                        image_receiving = 0;
-                        LOG_INFO("[UART] Image reception complete, ");
-                        debug_print_dec(image_received_bytes);
-                        debug_print(" bytes\r\n");
+
+                    uint32_t byte_off = image_received_bytes;
+                    uint32_t ps = byte_off / 2u;
+                    uint16_t x = (uint16_t)(ps % ST7789_WIDTH);
+                    uint16_t y = (uint16_t)(ps / ST7789_WIDTH);
+                    uint16_t px = (uint16_t)(chunk_size / 2u);
+                    if ((uint32_t)x + px <= ST7789_WIDTH && byte_off + chunk_size <= image_expected_size) {
+                        st7789_set_window(x, y, (uint16_t)(x + px - 1), y);
+                        ST7789_CS_PORT &= ~(1 << ST7789_CS_PIN);
+                        ST7789_DC_PORT |= (1 << ST7789_DC_PIN);
+                        for (uint16_t i = 0; i < chunk_size; i++) {
+                            spi_write(uart_buffer[4 + i]);
+                        }
+                        ST7789_CS_PORT |= (1 << ST7789_CS_PIN);
+                        image_received_bytes += chunk_size;
+                        image_chunk_index++;
+
+                        if (image_received_bytes >= image_expected_size) {
+                            image_receiving = 0;
+                            LOG_INFO("[UART] Image complete ");
+                            debug_print_u32(image_received_bytes);
+                            debug_print("\r\n");
+                            display_draw_image_footer();
+                        }
                     }
                 }
             }
             break;
     }
     
-    // Réinitialiser le buffer et le flag de commande en attente
+    // Réinitialiser le buffer UART courant (ligne déjà copiée depuis la file)
     uart_buffer_index = 0;
     uart_command = 0;
-    uart_cmd_pending = 0;
 }
 
-// Interruption UART (réception) - bufferise; la boucle principale traite quand uart_cmd_pending
+// Interruption UART (réception) — une ligne complète → file pour processUartCommand
 ISR(USART_RX_vect) {
     uint8_t received = UDR0;
-    
+
     if (received == '\n' || received == '\r') {
-        if (uart_buffer_index > 0) {
-            uart_cmd_pending = 1;  // Conserver le buffer pour processUartCommand
+        if (uart_rx_line_len > 0) {
+            if (uart_line_q_count < UART_LINE_QUEUE_DEPTH) {
+                uint8_t i = uart_line_q_in;
+                uint8_t n = uart_rx_line_len;
+                if (n >= UART_BUFFER_SIZE) {
+                    n = (uint8_t)(UART_BUFFER_SIZE - 1);
+                }
+                memcpy((void*)uart_line_queue[i], uart_rx_line, n);
+                uart_line_len[i] = n;
+                uart_line_q_in = (uint8_t)((uart_line_q_in + 1u) % UART_LINE_QUEUE_DEPTH);
+                uart_line_q_count++;
+            }
+            uart_rx_line_len = 0;
         }
-        // Ne PAS reset uart_buffer_index - la boucle principale le fera après traitement
     } else {
-        if (uart_cmd_pending) return;  // Attendre que la boucle principale traite
-        if (uart_buffer_index < UART_BUFFER_SIZE - 1) {
-            uart_buffer[uart_buffer_index++] = received;
+        if (uart_rx_line_len < UART_BUFFER_SIZE - 1) {
+            uart_rx_line[uart_rx_line_len++] = received;
         } else {
-            uart_buffer_index = 0;
+            uart_rx_line_len = 0;
         }
     }
 }

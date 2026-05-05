@@ -77,6 +77,21 @@ const title = 'Admin — Commandes | FlexPad';
                           ? new Date(o.createdAt).toLocaleString('fr-CA')
                           : ''}
                       </div>
+                      {(o.stripePaymentIntentId || o.stripeCheckoutSessionId) && (
+                        <div class="admin-orders-sub">
+                          {o.stripePaymentIntentId ? (
+                            <>
+                              PI: <code>{o.stripePaymentIntentId}</code>
+                            </>
+                          ) : null}
+                          {o.stripePaymentIntentId && o.stripeCheckoutSessionId ? ' · ' : ''}
+                          {o.stripeCheckoutSessionId ? (
+                            <>
+                              CS: <code>{o.stripeCheckoutSessionId}</code>
+                            </>
+                          ) : null}
+                        </div>
+                      )}
                     </td>
                     <td>
                       {customerName ?? '—'}

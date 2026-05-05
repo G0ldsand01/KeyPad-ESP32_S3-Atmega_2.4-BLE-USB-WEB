@@ -1,5 +1,5 @@
 import { d as defineMiddleware, s as sequence } from './chunks/index_B-QEPDv4.mjs';
-import { g as getSession } from './chunks/server_CatkvZha.mjs';
+import { g as getSession } from './chunks/server_BNGpEuMe.mjs';
 import './chunks/astro-designed-error-pages_ZwubNhbX.mjs';
 import 'cookie';
 

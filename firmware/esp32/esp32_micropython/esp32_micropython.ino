@@ -19,6 +19,9 @@
 #include <string>
 #include <math.h>
 #include <stdarg.h>
+#if ENABLE_KEYPAD_SLEEP_WAKE
+#include <esp_sleep.h>
+#endif
 
 #if USE_ESP32_DISPLAY_ST7789
 #include <SPI.h>
@@ -103,6 +106,10 @@ Encoder encoder;
 HidOutput hidOutput;
 
 HardwareSerial SerialAtmega(1);
+#if ENABLE_ATMEGA_UART
+// Démarré tôt dans setup() si veille matrice : permet CMD_PREPARE_SLEEP avant fin d’init.
+static bool g_atmega_uart_started = false;
+#endif
 USBHIDKeyboard Keyboard;
 USBHIDConsumerControl ConsumerControl;
 Preferences preferences;
@@ -149,8 +156,8 @@ static void loadProfileKeymap(uint8_t idx) {
     // Charger la keymap du profil depuis NVS (Preferences). Si une clé manque: laisser la valeur courante.
     for (int r = 0; r < NUM_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
-            // 0-0 est réservé à PROFILE (switch profil) — ne jamais le surcharger depuis NVS
-            if (r == 0 && c == 0) continue;
+            // 0-0 réservé à PROFILE — ne jamais le surcharger depuis NVS
+            if (r == PROFILE_KEY_ROW && c == PROFILE_KEY_COL) continue;
             String keyName = "p" + String((int)idx) + "_k_" + String(r) + "_" + String(c);
             if (preferences.isKey(keyName.c_str())) {
                 // Important: sur certains profils "vides", des clés existent mais avec valeur "".
@@ -166,8 +173,8 @@ static void loadProfileKeymap(uint8_t idx) {
 static void saveProfileKeymap(uint8_t idx) {
     for (int r = 0; r < NUM_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
-            // 0-0 est réservé à PROFILE (switch profil) — ne pas persister
-            if (r == 0 && c == 0) continue;
+            // 0-0 réservé à PROFILE — ne pas persister
+            if (r == PROFILE_KEY_ROW && c == PROFILE_KEY_COL) continue;
             String keyName = "p" + String((int)idx) + "_k_" + String(r) + "_" + String(c);
             preferences.putString(keyName.c_str(), KEYMAP[r][c]);
         }
@@ -198,6 +205,8 @@ uint8_t light_source = 0;
 // --- Display (contrôlé par l'ATmega) ---
 static uint8_t display_brightness = 128;
 static char display_mode_str[8] = "data"; // "data" / "image" / "gif" (support local: data)
+static char display_custom_line1[22] = "";
+static char display_custom_line2[22] = "";
 
 #if USE_ESP32_DISPLAY_ST7789
 // Utiliser le bus SPI par défaut (plus fiable sur ESP32-S3 avec pins remappées).
@@ -212,11 +221,9 @@ static void init_esp32_display_if_needed() {
     if (esp32DisplayReady) return;
 
 #if ESP32_TFT_BL >= 0
-    // Stabiliser la backlight en PWM (évite conflits digitalWrite/ledc et clignotements).
-    const int ch = 7;
-    ledcSetup(ch, 5000, 8);
-    ledcAttachPin(ESP32_TFT_BL, ch);
-    ledcWrite(ch, ESP32_TFT_BL_INVERT ? 0 : 255);
+    // Stabiliser la backlight en PWM (Arduino-esp32 v3+: ledcAttach par broche).
+    ledcAttach(ESP32_TFT_BL, 5000, 8);
+    ledcWrite(ESP32_TFT_BL, ESP32_TFT_BL_INVERT ? 0 : 255);
 #endif
 
     Serial.printf("[TFT] init pins SCK=%d MOSI=%d CS=%d DC=%d RST=%d BL=%d\n",
@@ -278,6 +285,7 @@ static void update_light_hysteresis_from_levels() {
 
 #if USE_ESP32_DISPLAY_ST7789
 // Forward declarations: render_display_data_local() est défini avant certains globals.
+extern String platformDetected;
 extern bool deviceConnected;
 extern bool env_brightness_enabled;
 extern bool backlight_enabled;
@@ -315,26 +323,24 @@ static void tft_hw_pin_test() {
 
     // Backlight PWM sweep (si BL pin câblée)
 #if ESP32_TFT_BL >= 0
-    const int ch = 7;
-    ledcSetup(ch, 5000, 8);
-    ledcAttachPin(ESP32_TFT_BL, ch);
+    ledcAttach(ESP32_TFT_BL, 5000, 8);
     // Sweep up/down 2 fois
     for (int rep = 0; rep < 2; rep++) {
         for (int v = 0; v <= 255; v += 5) {
             uint8_t out = (uint8_t)v;
             if (ESP32_TFT_BL_INVERT) out = 255 - out;
-            ledcWrite(ch, out);
+            ledcWrite(ESP32_TFT_BL, out);
             delay(10);
         }
         for (int v = 255; v >= 0; v -= 5) {
             uint8_t out = (uint8_t)v;
             if (ESP32_TFT_BL_INVERT) out = 255 - out;
-            ledcWrite(ch, out);
+            ledcWrite(ESP32_TFT_BL, out);
             delay(10);
         }
     }
     // Laisser ON
-    ledcWrite(ch, ESP32_TFT_BL_INVERT ? 0 : 255);
+    ledcWrite(ESP32_TFT_BL, ESP32_TFT_BL_INVERT ? 0 : 255);
     Serial.println("[TFT] HW test: BL PWM sweep done");
 #else
     Serial.println("[TFT] HW test: BL pin not set");
@@ -422,27 +428,104 @@ static void render_display_data_local() {
     init_esp32_display_if_needed();
     if (!esp32DisplayReady) return;
 
-    static bool first = true;
-    if (!first) return; // dessiner une seule fois pour debug (évite "blink" visuel)
-    first = false;
+    /* Monochrome : noir / gris uniquement (aucune teinte couleur) */
+    const uint16_t BG = rgb565(8, 8, 8);
+    const uint16_t ROW_BG = rgb565(10, 10, 10);
+    const uint16_t TXT = rgb565(144, 144, 144);
+    const uint16_t DIM = rgb565(80, 80, 80);
+    const uint16_t ACCENT = rgb565(120, 120, 120);
+    const uint16_t DIVIDER = rgb565(20, 20, 20);
+    const uint16_t BAR_BG = rgb565(8, 8, 8);
 
-    // Test visuel simple (pas d'alternance): fond blanc + texte noir.
-    const uint16_t bg = ST77XX_WHITE;
-    const uint16_t fg = ST77XX_BLACK;
-    esp32Tft.fillScreen(bg);
+    const int w = (int)esp32Tft.width();
+    const int h = (int)esp32Tft.height();
+
+    esp32Tft.fillScreen(BG);
+    esp32Tft.fillRect(0, 0, w, 1, ACCENT);
+    esp32Tft.fillRect(0, 2, w, 1, DIVIDER);
     esp32Tft.setTextWrap(false);
-    esp32Tft.setTextSize(4);
-    esp32Tft.setTextColor(fg, bg);
-    esp32Tft.setCursor(8, 8);
-    esp32Tft.print("HI");
-    Serial.println("[TFT] draw HI");
+    esp32Tft.setTextSize(2);
+    esp32Tft.setTextColor(TXT, BG);
+    esp32Tft.setCursor(12, 6);
+    esp32Tft.print("MACROPAD");
+    esp32Tft.setTextSize(1);
+    esp32Tft.setTextColor(DIM, BG);
+    esp32Tft.setCursor(12, 26);
+    esp32Tft.print("SIGNATURE");
+    esp32Tft.fillRect(12, 36, 86, 1, ACCENT);
 
-    static unsigned long last_tft_status = 0;
-    unsigned long now = millis();
-    if (now - last_tft_status > 2500UL) {
-        last_tft_status = now;
-        send_status_message("TFT draw HI");
-    }
+    auto drawRow = [&](int y, const char* lab, const String& val, uint16_t valCol) {
+        const int rowH = 17;
+        if (y + rowH > h - 18) return;
+        esp32Tft.fillRect(6, y, 2, rowH, ACCENT);
+        esp32Tft.fillRect(8, y, w - 14, rowH, ROW_BG);
+        esp32Tft.setTextSize(1);
+        esp32Tft.setTextColor(DIM, ROW_BG);
+        esp32Tft.setCursor(14, y + 5);
+        esp32Tft.print(lab);
+        String v = val;
+        if (v.length() > 22) v = v.substring(0, 19) + String("...");
+        esp32Tft.setTextColor(valCol, ROW_BG);
+        esp32Tft.setCursor(160, y + 5);
+        esp32Tft.print(v);
+    };
+
+    auto drawMappingRow = [&](int y, const char* lab, const String& val, uint8_t filled, uint8_t cap) {
+        const int rowH = 17;
+        if (y + rowH + 5 > h - 18) return;
+        esp32Tft.fillRect(6, y, 2, rowH, ACCENT);
+        esp32Tft.fillRect(8, y, w - 14, rowH, ROW_BG);
+        esp32Tft.setTextSize(1);
+        esp32Tft.setTextColor(DIM, ROW_BG);
+        esp32Tft.setCursor(14, y + 2);
+        esp32Tft.print(lab);
+        String v = val;
+        if (v.length() > 14) v = v.substring(0, 11) + String("...");
+        esp32Tft.setTextColor(ACCENT, ROW_BG);
+        esp32Tft.setCursor(160, y + 2);
+        esp32Tft.print(v);
+        const int bx = 12;
+        const int bw = w - 28;
+        const int bh = 3;
+        const int by = y + 12;
+        esp32Tft.fillRect(bx, by, bw, bh, BAR_BG);
+        if (cap > 0 && filled > 0) {
+            uint32_t px = (uint32_t)filled * (uint32_t)bw / (uint32_t)cap;
+            if (px > (uint32_t)bw) px = (uint32_t)bw;
+            if (px > 0)
+                esp32Tft.fillRect(bx, by, (int)px, bh, ACCENT);
+        }
+    };
+
+    int y = 42;
+    drawRow(y, "PROFIL", getStoredProfileName(activeProfileIndex), TXT);
+    y += 18;
+
+    const String linkStr = deviceConnected ? String("BLUETOOTH") : String("USB");
+    drawRow(y, "LIAISON", linkStr, TXT);
+    y += 18;
+
+    drawRow(y, "HOTE", platformDetected, TXT);
+    y += 18;
+
+    const String touchStr = last_key_pressed.length() ? last_key_pressed : String("-");
+    drawRow(y, "SAISIE", touchStr, TXT);
+    y += 18;
+
+    uint8_t filled = count_configured_keys();
+    String mapStr = String(filled) + "/" + String(NUM_KEYS);
+    drawMappingRow(y, "MAPPING", mapStr, filled, (uint8_t)NUM_KEYS);
+    y += 23;
+
+    esp32Tft.setTextSize(1);
+    esp32Tft.setTextColor(DIM, BG);
+    esp32Tft.setCursor(8, h - 12);
+    esp32Tft.print("FW v");
+    esp32Tft.print(FW_VERSION_MAJOR);
+    esp32Tft.print(".");
+    esp32Tft.print(FW_VERSION_MINOR);
+    esp32Tft.print(".");
+    esp32Tft.print(FW_VERSION_PATCH);
 }
 #endif
 static uint16_t read_esp32_light_level_0_1023() {
@@ -461,7 +544,6 @@ static uint16_t read_esp32_light_level_0_1023() {
 }
 
 // LED
-int led_pwm_channel = 0;
 int led_brightness = 128;
 bool backlight_enabled = true;
 bool env_brightness_enabled = false;  // Toggle "Selon l'environnement" du web
@@ -531,6 +613,196 @@ unsigned long bleSwitchLastTrigger = 0;
 #define SERVICE_UUID_SERIAL "0000ffe0-0000-1000-8000-00805f9b34fb"
 #define CHAR_UUID_SERIAL "0000ffe1-0000-1000-8000-00805f9b34fb"
 
+// ==================== VEILLE PROFONDE + RÉVEIL MATRICE ====================
+#if ENABLE_KEYPAD_SLEEP_WAKE
+#if USE_ESP32_DISPLAY_ST7789 && SLEEP_TIMING_GPIO >= 0
+#if ESP32_TFT_RST == SLEEP_TIMING_GPIO
+#error "SLEEP_TIMING_GPIO entre en conflit avec ESP32_TFT_RST — modifie Config.h"
+#endif
+#endif
+static unsigned long g_last_user_activity_ms = 0;
+#if SLEEP_EXT1_PHANTOM_MAX_BOOT_AFTER > 0
+RTC_DATA_ATTR static uint32_t g_ext1_spurious_streak = 0;
+#endif
+// true après init strip + PWM (enter_keypad_deep_sleep : chemin « normal » veille depuis la loop).
+static bool g_sleep_hw_prepared = false;
+
+static void bump_user_activity(void) {
+    g_last_user_activity_ms = millis();
+}
+
+static uint64_t row_pins_ext1_wakeup_mask(void) {
+    uint64_t m = 0;
+    for (int i = 0; i < NUM_ROWS; i++) {
+        int p = (int)ROW_PINS[i];
+        if (p >= 0 && p < 48) {
+            m |= (1ULL << (unsigned)p);
+        }
+    }
+    return m;
+}
+
+static void sleep_timing_boot_high(void) {
+#if SLEEP_TIMING_GPIO >= 0
+    pinMode(SLEEP_TIMING_GPIO, OUTPUT);
+    digitalWrite(SLEEP_TIMING_GPIO, HIGH);
+#endif
+}
+
+static void sleep_timing_boot_ready_low(void) {
+#if SLEEP_TIMING_GPIO >= 0
+    digitalWrite(SLEEP_TIMING_GPIO, LOW);
+#endif
+}
+
+static void log_sleep_wakeup_cause(void) {
+    esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
+    switch (wc) {
+        case ESP_SLEEP_WAKEUP_EXT1: {
+            Serial.println("[SLEEP] Réveil: EXT1 (contact matrice)");
+#if SLEEP_EXT1_VERBOSE_SERIAL
+            uint64_t st = esp_sleep_get_ext1_wakeup_status();
+            Serial.printf("[SLEEP] EXT1 GPIO vu LOW au réveil: 0x%016llx", (unsigned long long)st);
+            for (int i = 0; i < NUM_ROWS; i++) {
+                int p = (int)ROW_PINS[i];
+                if (p >= 0 && p < 64 && (st & (1ULL << (unsigned)p)) != 0ULL) {
+                    Serial.printf(" | R%u=GPIO%d", (unsigned)i, p);
+                }
+            }
+            Serial.println();
+#endif
+            break;
+        }
+        case ESP_SLEEP_WAKEUP_EXT0:
+            Serial.println("[SLEEP] Réveil: EXT0");
+            break;
+        case ESP_SLEEP_WAKEUP_TIMER:
+            Serial.println("[SLEEP] Réveil: timer");
+            break;
+        default:
+            Serial.println("[SLEEP] Réveil: alimentation / reset logiciel");
+            break;
+    }
+}
+
+static void enter_keypad_deep_sleep(void) {
+    // esp_deep_sleep_start() coupe toute l’alim logique : au réveil c’est un redémarrage complet (normal).
+#if SLEEP_EXT1_VERBOSE_SERIAL
+    const bool announce_sleep = true;
+#else
+    const bool announce_sleep = g_sleep_hw_prepared;
+#endif
+    if (announce_sleep) {
+        Serial.println("[SLEEP] Inactivité → veille profonde (réveil par touche = boot complet)");
+    }
+    Serial.flush();
+#if SLEEP_TIMING_GPIO >= 0
+    digitalWrite(SLEEP_TIMING_GPIO, HIGH);
+    delayMicroseconds(400);
+#endif
+#if ENABLE_ATMEGA_UART
+    if (g_atmega_uart_started) {
+        send_atmega_command(CMD_PREPARE_SLEEP, nullptr, 0);
+        delay(55);
+    }
+#endif
+#if ENABLE_LED_STRIP
+    {
+        uint16_t n = led_strip_active_count;
+        if (n == 0 || n > (uint16_t)LED_STRIP_MAX) {
+            n = (uint16_t)LED_STRIP_DEFAULT_ACTIVE;
+        }
+        if (!g_sleep_hw_prepared) {
+            // Filtre EXT1 avant apply_led_strip_runtime_config : init bus puis noir.
+            ledStrip.updateLength(n);
+            ledStrip.begin();
+            ledStrip.setBrightness(255);
+        }
+        ledStrip.clear();
+        ledStrip.show();
+        pinMode(LED_STRIP_PIN, OUTPUT);
+        digitalWrite(LED_STRIP_PIN, LOW);
+    }
+#endif
+#if LED_PWM_PIN >= 0
+    if (g_sleep_hw_prepared) {
+        ledcWrite(LED_PWM_PIN, 0);
+    } else {
+        pinMode(LED_PWM_PIN, OUTPUT);
+        digitalWrite(LED_PWM_PIN, LOW);
+    }
+#endif
+
+    keyMatrix.prepareForDeepSleepWake();
+    uint64_t mask = row_pins_ext1_wakeup_mask();
+    if (mask == 0ULL) {
+        Serial.println("[SLEEP] Masque EXT1 vide — abandon");
+        keyMatrix.begin();
+#if SLEEP_TIMING_GPIO >= 0
+        digitalWrite(SLEEP_TIMING_GPIO, LOW);
+#endif
+        bump_user_activity();
+        return;
+    }
+    esp_err_t err = esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_LOW);
+    if (err != ESP_OK) {
+        Serial.printf("[SLEEP] esp_sleep_enable_ext1_wakeup: %d\n", (int)err);
+        keyMatrix.begin();
+#if SLEEP_TIMING_GPIO >= 0
+        digitalWrite(SLEEP_TIMING_GPIO, LOW);
+#endif
+        bump_user_activity();
+        return;
+    }
+    delay(30);
+#if SLEEP_TIMING_GPIO >= 0
+    digitalWrite(SLEEP_TIMING_GPIO, LOW);
+#endif
+    esp_deep_sleep_start();
+}
+
+// Après EXT1 : sans touche **stable**, repartir en veille (glitch / ligne flottante).
+// Si SLEEP_EXT1_PHANTOM_MAX_BOOT_AFTER > 0, boot complet après N rejets (debug uniquement).
+static void filter_spurious_ext1_wake_if_needed(void) {
+    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT1) {
+#if SLEEP_EXT1_PHANTOM_MAX_BOOT_AFTER > 0
+        g_ext1_spurious_streak = 0;
+#endif
+        return;
+    }
+    delay(180);
+    if (keyMatrix.anyKeyPressedRawStable()) {
+#if SLEEP_EXT1_PHANTOM_MAX_BOOT_AFTER > 0
+        g_ext1_spurious_streak = 0;
+#endif
+        return;
+    }
+#if SLEEP_EXT1_PHANTOM_MAX_BOOT_AFTER > 0
+    g_ext1_spurious_streak++;
+    if (g_ext1_spurious_streak >= (uint32_t)SLEEP_EXT1_PHANTOM_MAX_BOOT_AFTER) {
+        Serial.println("[SLEEP] Trop de réveils EXT1 fantômes d’affilée — boot (voir EXT1 GPIO / matrice)");
+        g_ext1_spurious_streak = 0;
+        return;
+    }
+    Serial.printf("[SLEEP] EXT1 sans touche stable (fantôme %u/%u) → retour veille\n",
+                  (unsigned)g_ext1_spurious_streak,
+                  (unsigned)SLEEP_EXT1_PHANTOM_MAX_BOOT_AFTER);
+#else
+#if SLEEP_EXT1_VERBOSE_SERIAL
+    Serial.println("[SLEEP] EXT1 sans touche stable → retour veille");
+#endif
+#endif
+    Serial.flush();
+    enter_keypad_deep_sleep();
+    Serial.println("[SLEEP] Retour veille impossible — poursuite du boot");
+#if SLEEP_EXT1_PHANTOM_MAX_BOOT_AFTER > 0
+    g_ext1_spurious_streak = 0;
+#endif
+}
+#else
+static inline void bump_user_activity(void) {}
+#endif // ENABLE_KEYPAD_SLEEP_WAKE
+
 // ==================== DÉCLARATIONS FORWARD ====================
 void send_to_web(String data);
 void send_uart_log_to_web(const char* dir, const char* msg);
@@ -542,6 +814,7 @@ void update_builtin_led_from_light();
 // ==================== CALLBACKS (logique événementielle) ====================
 
 void onKeyPress(uint8_t row, uint8_t col, bool pressed, bool isRepeat) {
+    bump_user_activity();
     if (!pressed) return;
     String symbol = KEYMAP[row][col];
     if (symbol.length() == 0) return;
@@ -549,7 +822,7 @@ void onKeyPress(uint8_t row, uint8_t col, bool pressed, bool isRepeat) {
 
 #if ENABLE_BLE_DEVICE_SWITCH
     // Ne pas envoyer si combo PROFILE+1 en cours (switch BLE)
-    if (keyMatrix.isKeyPressed(0, 0) && keyMatrix.isKeyPressed(3, 0)) return;
+    if (keyMatrix.isKeyPressed(PROFILE_KEY_ROW, PROFILE_KEY_COL) && keyMatrix.isKeyPressed(3, 0)) return;
 #endif
 
     // PROFILE: changer de profil côté firmware (ne pas envoyer au host)
@@ -577,6 +850,7 @@ void onKeyPress(uint8_t row, uint8_t col, bool pressed, bool isRepeat) {
 }
 
 void onEncoderRotate(int8_t dir, uint8_t steps) {
+    bump_user_activity();
     uint16_t total = (uint16_t)steps * (uint16_t)max((uint8_t)1, min((uint8_t)10, encoderStep));
     if (total == 0) total = 1;
     for (uint16_t i = 0; i < total; i++) {
@@ -588,6 +862,7 @@ void onEncoderRotate(int8_t dir, uint8_t steps) {
 }
 
 void onEncoderButton(bool pressed) {
+    if (pressed) bump_user_activity();
     if (pressed) hidOutput.sendMute();
 }
 
@@ -602,6 +877,7 @@ void send_display_data_to_atmega();
 void handle_config_message(JsonObject& data);
 void handle_backlight_message(JsonObject& data);
 void handle_display_message(JsonObject& data);
+void handle_display_image_message(JsonObject& data);
 void send_config_to_web();
 uint8_t count_configured_keys();
 void send_status_message(String message);
@@ -612,6 +888,10 @@ void update_per_key_leds();
 int row_col_to_led_index(int row, int col);
 void apply_keymap_defaults();
 void apply_led_strip_runtime_config();
+#if ENABLE_LED_STRIP
+static void render_backlight_strip_pixels(void);
+static void backlight_snap_strip_rgb_to_target(void);
+#endif
 static const char* anim_mode_to_string(uint8_t m);
 
 // ==================== CALLBACKS BLE ====================
@@ -620,20 +900,22 @@ class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pSrv) override {
         deviceConnected = true;
         hidOutput.setBleState(true, pInputCharacteristic);
+        bump_user_activity();
         Serial.println("[BLE] Client connected");
     }
     void onDisconnect(BLEServer* pSrv) override {
         deviceConnected = false;
         hidOutput.setBleState(false, nullptr);
+        bump_user_activity();
         Serial.println("[BLE] Client disconnected");
     }
 };
 
 class SerialCharacteristicCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) override {
-        std::string value = pCharacteristic->getValue();
-        if (!value.empty()) {
-            bleSerialBuffer += String(value.c_str());
+        String value = pCharacteristic->getValue();
+        if (value.length()) {
+            bleSerialBuffer += value;
         }
     }
 };
@@ -643,20 +925,116 @@ class SerialCharacteristicCallbacks: public BLECharacteristicCallbacks {
 void setup() {
     // IMPORTANT: Tools > USB CDC On Boot: Enabled = Serial sur port USB natif.
     //            Disabled = HID seul sur port USB natif; utiliser port UART pour Serial/flash.
-    // Délai pour laisser le port USB s'initialiser après le boot
-    delay(2000);
+#if ENABLE_KEYPAD_SLEEP_WAKE
+    sleep_timing_boot_high();
+    const bool ext1_matrix_wake =
+        (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1);
+#else
+    const bool ext1_matrix_wake = false;
+#endif
+    // USB : délai long au cold boot ; court au réveil matrice (filtrage fantôme + touche courte)
+    if (ext1_matrix_wake) {
+        delay(40);
+    } else {
+        delay(2000);
+    }
     
     Serial.begin(115200);
-    delay(500);
+    delay(ext1_matrix_wake ? 120 : 500);
+#if ENABLE_ATMEGA_UART
+    SerialAtmega.begin(ATMEGA_UART_BAUD, SERIAL_8N1, ATMEGA_UART_RX, ATMEGA_UART_TX);
+    delay(50);
+    g_atmega_uart_started = true;
+#endif
+#if ENABLE_KEYPAD_SLEEP_WAKE
+    log_sleep_wakeup_cause();
+    keyMatrix.begin();
+    filter_spurious_ext1_wake_if_needed();
+#endif
     randomSeed((unsigned long)(micros() ^ millis()));
-    // Boot: on affiche un encadré récapitulatif plus bas (après init prefs/UART).
-    
+
+    // NVS + lumière avant USB/BLE au réveil matrice → rétro + strip le plus tôt possible.
+    preferences.begin("macropad", false);
+    platformDetected = preferences.getString("platform", "unknown");
+    profileCount = preferences.getUChar("profile_count", PROFILE_COUNT_DEFAULT);
+    if (profileCount == 0 || profileCount > 10) profileCount = PROFILE_COUNT_DEFAULT;
+    activeProfileIndex = preferences.getUChar("active_profile", 0) % profileCount;
+    env_brightness_enabled = preferences.getBool("env_brightness", false);
+    backlight_enabled = preferences.getBool("backlight_en", true);
+    led_brightness = preferences.getUChar("led_brightness", 128);
+    led_brightness = max(0, min(255, led_brightness));
+    led_color_r = preferences.getUChar("led_cr", 255);
+    led_color_g = preferences.getUChar("led_cg", 180);
+    led_color_b = preferences.getUChar("led_cb", 50);
+    light_source = preferences.getUChar("light_src", 0);
+    display_brightness = preferences.getUChar("disp_br", 128);
+    String dm = preferences.getString("disp_mode", "data");
+    dm.trim(); dm.toLowerCase();
+    if (dm != "data" && dm != "image" && dm != "gif") dm = "data";
+    strncpy(display_mode_str, dm.c_str(), sizeof(display_mode_str) - 1);
+    display_mode_str[sizeof(display_mode_str) - 1] = '\0';
+    {
+        String dc1 = preferences.getString("disp_c1", "");
+        String dc2 = preferences.getString("disp_c2", "");
+        if (dc1.length() > 21) dc1 = dc1.substring(0, 21);
+        if (dc2.length() > 21) dc2 = dc2.substring(0, 21);
+        strncpy(display_custom_line1, dc1.c_str(), sizeof(display_custom_line1) - 1);
+        display_custom_line1[sizeof(display_custom_line1) - 1] = '\0';
+        strncpy(display_custom_line2, dc2.c_str(), sizeof(display_custom_line2) - 1);
+        display_custom_line2[sizeof(display_custom_line2) - 1] = '\0';
+    }
+    led_strip_active_count = (uint16_t)preferences.getUInt("led_count", LED_STRIP_DEFAULT_ACTIVE);
+    bl_anim_mode = preferences.getUChar("bl_anim", BL_ANIM_SOLID);
+    bl_anim_speed_ms = (uint16_t)preferences.getUInt("bl_spd", 2500);
+    bl_anim_length = preferences.getUChar("bl_len", 3);
+    encoderStep = preferences.getUChar("enc_step", 1);
+    if (encoderStep < 1 || encoderStep > 10) encoderStep = 1;
+
+#if USE_ESP32_LIGHT_SENSOR
+    pinMode(ESP32_LIGHT_ADC_PIN, INPUT);
+    analogReadResolution(12);
+    analogSetPinAttenuation(ESP32_LIGHT_ADC_PIN, ADC_11db);
+    last_light_level = read_esp32_light_level_0_1023();
+    light_filtered = (float)last_light_level;
+#endif
+
+    apply_keymap_defaults();
+    loadProfileKeymap(activeProfileIndex);
+
+    bool matrix_wake_fast_ui_done = false;
+#if ENABLE_KEYPAD_SLEEP_WAKE
+    if (ext1_matrix_wake) {
+#if ENABLE_ATMEGA_UART
+        {
+            uint8_t pl[2];
+            pl[0] = backlight_enabled ? 1 : 0;
+            pl[1] = backlight_enabled ? (uint8_t)led_brightness : 0;
+            send_atmega_command(CMD_RESUME_FROM_SLEEP, pl, 2);
+            delay(28);
+        }
+#endif
+#if LED_PWM_PIN >= 0
+        ledcAttach(LED_PWM_PIN, 1000, 10);
+        ledcWrite(LED_PWM_PIN, backlight_enabled ? (led_brightness * 1023 / 255) : 0);
+#endif
+#if ENABLE_LED_STRIP
+        apply_led_strip_runtime_config();
+        delay(5);
+        update_builtin_led_from_light();
+#endif
+        matrix_wake_fast_ui_done = true;
+    }
+#endif
+
+    const uint32_t usb_stabilize_ms = ext1_matrix_wake ? 70UL : 1000UL;
+    const uint32_t hid_stabilize_ms = ext1_matrix_wake ? 40UL : 1000UL;
+
     // Initialiser USB HID (clavier + Consumer Control pour volume/média)
     USB.begin();
-    delay(1000);
+    delay(usb_stabilize_ms);
     Keyboard.begin();
     ConsumerControl.begin();
-    delay(1000);
+    delay(hid_stabilize_ms);
     // (logs détaillés USB/BLE dans l'encadré de boot)
     
     // Initialiser BLE avec un nom qui indique clairement que c'est un clavier
@@ -731,55 +1109,14 @@ void setup() {
         BLE_AVAILABLE = false;
         Serial.println("[BLE] Error initializing BLE");
     }
-    
-    preferences.begin("macropad", false);
-    platformDetected = preferences.getString("platform", "unknown");
-    profileCount = preferences.getUChar("profile_count", PROFILE_COUNT_DEFAULT);
-    if (profileCount == 0 || profileCount > 10) profileCount = PROFILE_COUNT_DEFAULT;
-    activeProfileIndex = preferences.getUChar("active_profile", 0) % profileCount;
-    // Charger config backlight persistée (env_brightness = LED selon luminosité)
-    env_brightness_enabled = preferences.getBool("env_brightness", true);  // true = LED built-in suit la luminosité par défaut
-    backlight_enabled = preferences.getBool("backlight_en", true);
-    led_brightness = preferences.getUChar("led_brightness", 128);
-    led_brightness = max(0, min(255, led_brightness));
-    led_color_r = preferences.getUChar("led_cr", 255);
-    led_color_g = preferences.getUChar("led_cg", 180);
-    led_color_b = preferences.getUChar("led_cb", 50);
-    light_source = preferences.getUChar("light_src", 0);
-    display_brightness = preferences.getUChar("disp_br", 128);
-    String dm = preferences.getString("disp_mode", "data");
-    dm.trim(); dm.toLowerCase();
-    if (dm != "data" && dm != "image" && dm != "gif") dm = "data";
-    strncpy(display_mode_str, dm.c_str(), sizeof(display_mode_str) - 1);
-    display_mode_str[sizeof(display_mode_str) - 1] = '\0';
-    led_strip_active_count = (uint16_t)preferences.getUInt("led_count", LED_STRIP_DEFAULT_ACTIVE);
-    bl_anim_mode = preferences.getUChar("bl_anim", BL_ANIM_SOLID);
-    bl_anim_speed_ms = (uint16_t)preferences.getUInt("bl_spd", 2500);
-    bl_anim_length = preferences.getUChar("bl_len", 3);
-    encoderStep = preferences.getUChar("enc_step", 1);
-    if (encoderStep < 1 || encoderStep > 10) encoderStep = 1;
-    // (dans l'encadré de boot)
 
-#if USE_ESP32_LIGHT_SENSOR
-    pinMode(ESP32_LIGHT_ADC_PIN, INPUT);
-    // ADC stable (0..4095 typiquement)
-    analogReadResolution(12);
-    analogSetPinAttenuation(ESP32_LIGHT_ADC_PIN, ADC_11db);
-    // Prime une première lecture
-    last_light_level = read_esp32_light_level_0_1023();
-    light_filtered = (float)last_light_level;
-    // (dans l'encadré de boot)
-#endif
-    
-    // Keymap: defaults puis charger le profil actif
-    apply_keymap_defaults();
-    loadProfileKeymap(activeProfileIndex);  
-    // (dans l'encadré de boot)
-    
     // Initialiser UART ATmega (optionnel)
 #if ENABLE_ATMEGA_UART
-    SerialAtmega.begin(ATMEGA_UART_BAUD, SERIAL_8N1, ATMEGA_UART_RX, ATMEGA_UART_TX);
-    delay(100);
+    if (!g_atmega_uart_started) {
+        SerialAtmega.begin(ATMEGA_UART_BAUD, SERIAL_8N1, ATMEGA_UART_RX, ATMEGA_UART_TX);
+        delay(100);
+        g_atmega_uart_started = true;
+    }
     Serial.printf("[UART] ATmega UART initialized TX=%d, RX=%d, %d baud\n",
                   ATMEGA_UART_TX, ATMEGA_UART_RX, ATMEGA_UART_BAUD);
 #else
@@ -791,19 +1128,21 @@ void setup() {
 #endif
     
 #if LED_PWM_PIN >= 0
-    // PWM LED externe (si pin différent de la built-in)
-    ledcSetup(led_pwm_channel, 1000, 10);
-    ledcAttachPin(LED_PWM_PIN, led_pwm_channel);
-    ledcWrite(led_pwm_channel, backlight_enabled ? (led_brightness * 1023 / 255) : 0);
+    if (!matrix_wake_fast_ui_done) {
+        ledcAttach(LED_PWM_PIN, 1000, 10);
+        ledcWrite(LED_PWM_PIN, backlight_enabled ? (led_brightness * 1023 / 255) : 0);
+    }
     Serial.printf("[LED] LED PWM initialized on GPIO %d\n", LED_PWM_PIN);
 #else
     Serial.println("[LED] Built-in LED only (NeoPixel), no PWM");
 #endif
     
 #if ENABLE_LED_STRIP
-    apply_led_strip_runtime_config();
-    delay(10);
-    update_builtin_led_from_light();
+    if (!matrix_wake_fast_ui_done) {
+        apply_led_strip_runtime_config();
+        delay(10);
+        update_builtin_led_from_light();
+    }
     Serial.printf("[LED] RGB GPIO %d — %u pixels actifs / max %u, anim=%u vitesse=%u ms traînée=%u\n",
                   LED_STRIP_PIN,
                   (unsigned)led_strip_active_count,
@@ -816,9 +1155,15 @@ void setup() {
     digitalWrite(LED_STRIP_PIN, LOW);
     Serial.println("[LED] RGB disabled");
 #endif
-    
+
+#if ENABLE_KEYPAD_SLEEP_WAKE
+    g_sleep_hw_prepared = true;
+#endif
+
     // Modules (logique événementielle)
+#if !ENABLE_KEYPAD_SLEEP_WAKE
     keyMatrix.begin();
+#endif
     keyMatrix.setCallback(onKeyPress);
     Serial.println("[MATRIX] Key matrix initialized");
 
@@ -865,24 +1210,63 @@ void setup() {
 #endif
     boot_box_hr();
 
+#if ENABLE_ATMEGA_UART
+    /* Après flash USB / reset matériel : l'ATmega peut être resté en SLPIN (veille précédente).
+       Sans RESUME, SET_DISPLAY_DATA ne dessine pas (garde veille) → écran noir / BL figé. */
+    if (!matrix_wake_fast_ui_done) {
+        uint8_t pl[2];
+        pl[0] = backlight_enabled ? 1 : 0;
+        pl[1] = backlight_enabled ? (uint8_t)led_brightness : 0;
+        send_atmega_command(CMD_RESUME_FROM_SLEEP, pl, 2);
+        delay(28);
+    }
+#endif
+
     send_display_data_to_atmega();
+#if ENABLE_ATMEGA_UART
+    delay(ext1_matrix_wake ? 50 : 200);
+    send_display_data_to_atmega();
+#endif
+#if USE_ESP32_DISPLAY_ST7789
+    render_display_data_local();
+#endif
     Serial.println("[MAIN] Initialization complete");
     Serial.println("Ready!");
+#if ENABLE_KEYPAD_SLEEP_WAKE
+    sleep_timing_boot_ready_low();
+    g_last_user_activity_ms = millis();
+#endif
 }
 
 // ==================== LOOP PRINCIPAL ====================
 
 void loop() {
     unsigned long now = millis();
-    
+
     // Lire l'encodeur AVANT le scan matrice (évite interférences GPIO sur CLK/DT)
     delay(1);
     encoder.update();
     keyMatrix.scan();
 
+#if ENABLE_KEYPAD_SLEEP_WAKE
+    // Ne PAS comparer avec `now` capturé en tête de boucle : bump_user_activity()
+    // utilise millis() après delay/scan ; si g_last > now, (now - g_last) unsigned
+    // déborde → veille immédiate après chaque touche.
+    if (!ota_in_progress && KEY_IDLE_DEEP_SLEEP_MS > 0UL) {
+        bool allow_sleep = true;
+#if !SLEEP_WHEN_BLE_CONNECTED
+        if (deviceConnected) allow_sleep = false;
+#endif
+        unsigned long idle_now = millis();
+        if (allow_sleep && (idle_now - g_last_user_activity_ms >= KEY_IDLE_DEEP_SLEEP_MS)) {
+            enter_keypad_deep_sleep();
+        }
+    }
+#endif
+
 #if ENABLE_BLE_DEVICE_SWITCH
     // PROFILE(0,0) + 1(3,0) maintenu 2s → déconnecte BLE pour connecter un autre appareil
-    bool profileHeld = keyMatrix.isKeyPressed(0, 0);
+    bool profileHeld = keyMatrix.isKeyPressed(PROFILE_KEY_ROW, PROFILE_KEY_COL);
     bool oneHeld = keyMatrix.isKeyPressed(3, 0);
     if (profileHeld && oneHeld && (now - bleSwitchLastTrigger) > 2000) {
         if (bleSwitchComboStart == 0) bleSwitchComboStart = now;
@@ -954,8 +1338,15 @@ void loop() {
         send_light_level();
     }
 
-    // (Écran contrôlé par ATmega: rien à rafraîchir localement ici)
-    
+    // Rafraîchir le HUD sur TFT ESP32 (si activé)
+#if USE_ESP32_DISPLAY_ST7789
+    static unsigned long last_esp32_tft_draw = 0;
+    if (esp32DisplayReady && (now - last_esp32_tft_draw >= (unsigned long)DISPLAY_UPDATE_INTERVAL_MS)) {
+        last_esp32_tft_draw = now;
+        render_display_data_local();
+    }
+#endif
+
     // Transition progressive de la LED
     update_builtin_led_from_light();
     
@@ -982,8 +1373,9 @@ void processWebMessage(String message) {
     if (message.length() < 2) {
         return;
     }
+    bump_user_activity();
     
-    StaticJsonDocument<4096> doc;
+    StaticJsonDocument<8192> doc;
     DeserializationError error = deserializeJson(doc, message);
     
     if (error) {
@@ -1002,6 +1394,9 @@ void processWebMessage(String message) {
     } else if (msg_type == "display") {
         JsonObject displayObj = doc.as<JsonObject>();
         handle_display_message(displayObj);
+    } else if (msg_type == "display_image") {
+        JsonObject imgObj = doc.as<JsonObject>();
+        handle_display_image_message(imgObj);
     } else if (msg_type == "get_config") {
         send_config_to_web();
     } else if (msg_type == "get_light") {
@@ -1099,8 +1494,8 @@ void handle_config_message(JsonObject& data) {
             KEYMAP[r][c] = "";
         }
     }
-    // 0-0 est réservé à PROFILE (le Web UI n'envoie volontairement jamais 0-0)
-    KEYMAP[0][0] = "PROFILE";
+    // 0-0 réservé à PROFILE (le Web UI n'envoie volontairement jamais 0-0)
+    KEYMAP[PROFILE_KEY_ROW][PROFILE_KEY_COL] = "PROFILE";
     
     if (data.containsKey("platform")) {
         platformDetected = data["platform"].as<String>();
@@ -1136,7 +1531,7 @@ void handle_config_message(JsonObject& data) {
         }
     }
     // Sécurité: garantir que PROFILE reste assigné à 0-0
-    KEYMAP[0][0] = "PROFILE";
+    KEYMAP[PROFILE_KEY_ROW][PROFILE_KEY_COL] = "PROFILE";
     
     // Persister la keymap du profil actif en NVS pour survivre au redémarrage
     saveProfileKeymap(activeProfileIndex);
@@ -1148,6 +1543,11 @@ void handle_config_message(JsonObject& data) {
 
 void handle_backlight_message(JsonObject& data) {
     Serial.println("[WEB] Processing backlight message");
+
+#if ENABLE_LED_STRIP
+    // Après changement Web : afficher tout de suite (sinon le fondu / la boucle peut laisser croire qu'il ne faut pas que reset).
+    bool strip_snap_to_target = false;
+#endif
     
     if (data.containsKey("colorR") || data.containsKey("colorG") || data.containsKey("colorB")) {
         if (data.containsKey("colorR")) {
@@ -1166,6 +1566,9 @@ void handle_backlight_message(JsonObject& data) {
         preferences.putUChar("led_cg", led_color_g);
         preferences.putUChar("led_cb", led_color_b);
         Serial.printf("[LED] Color RGB (%u,%u,%u)\n", (unsigned)led_color_r, (unsigned)led_color_g, (unsigned)led_color_b);
+#if ENABLE_LED_STRIP
+        strip_snap_to_target = true;
+#endif
     }
     if (data["color"].is<JsonObject>()) {
         JsonObject c = data["color"];
@@ -1176,13 +1579,16 @@ void handle_backlight_message(JsonObject& data) {
         preferences.putUChar("led_cg", led_color_g);
         preferences.putUChar("led_cb", led_color_b);
         Serial.printf("[LED] Color RGB (%u,%u,%u)\n", (unsigned)led_color_r, (unsigned)led_color_g, (unsigned)led_color_b);
+#if ENABLE_LED_STRIP
+        strip_snap_to_target = true;
+#endif
     }
     
     if (data.containsKey("enabled")) {
         backlight_enabled = data["enabled"].as<bool>();
         if (!backlight_enabled) {
 #if LED_PWM_PIN >= 0
-            ledcWrite(led_pwm_channel, 0);
+            ledcWrite(LED_PWM_PIN, 0);
 #endif
 #if ENABLE_LED_STRIP
             ledStrip.clear();
@@ -1192,7 +1598,7 @@ void handle_backlight_message(JsonObject& data) {
 #if LED_PWM_PIN >= 0
             update_light_hysteresis_from_levels();
             uint8_t pwm_val = (env_brightness_enabled && !light_is_dark) ? 0 : led_brightness;
-            ledcWrite(led_pwm_channel, pwm_val * 1023 / 255);
+            ledcWrite(LED_PWM_PIN, pwm_val * 1023 / 255);
 #endif
 #if ENABLE_LED_STRIP
             ledStrip.setBrightness(255);
@@ -1208,7 +1614,7 @@ void handle_backlight_message(JsonObject& data) {
 #if LED_PWM_PIN >= 0
             update_light_hysteresis_from_levels();
             uint8_t pwm_val = (env_brightness_enabled && !light_is_dark) ? 0 : led_brightness;
-            ledcWrite(led_pwm_channel, pwm_val * 1023 / 255);
+            ledcWrite(LED_PWM_PIN, pwm_val * 1023 / 255);
 #endif
 #if ENABLE_LED_STRIP
             ledStrip.setBrightness(255);
@@ -1235,23 +1641,27 @@ void handle_backlight_message(JsonObject& data) {
         if (c < minc) c = minc;
         led_strip_active_count = (uint16_t)c;
         need_apply_strip = true;
+        strip_snap_to_target = true;
         Serial.printf("[LED] ledCount=%u (max %u)\n", (unsigned)led_strip_active_count, (unsigned)LED_STRIP_MAX);
     }
     if (data.containsKey("animMode")) {
         bl_anim_mode = parse_anim_mode_from_json(data);
         Serial.printf("[LED] animMode=%u\n", (unsigned)bl_anim_mode);
+        strip_snap_to_target = true;
     }
     if (data.containsKey("animSpeed")) {
         int sp = data["animSpeed"].as<int>();
         if (sp < 200) sp = 200;
         if (sp > 12000) sp = 12000;
         bl_anim_speed_ms = (uint16_t)sp;
+        strip_snap_to_target = true;
     }
     if (data.containsKey("animLength")) {
         int Ln = data["animLength"].as<int>();
         if (Ln < 1) Ln = 1;
         if (Ln > 24) Ln = 24;
         bl_anim_length = (uint8_t)Ln;
+        strip_snap_to_target = true;
     }
     if (need_apply_strip) {
         apply_led_strip_runtime_config();
@@ -1282,6 +1692,9 @@ void handle_backlight_message(JsonObject& data) {
     
 #if ENABLE_LED_STRIP
     update_builtin_led_from_light();
+    if (strip_snap_to_target) {
+        backlight_snap_strip_rgb_to_target();
+    }
 #endif
     send_last_key_to_atmega();
     Serial.println("[WEB] Backlight config updated");
@@ -1310,9 +1723,149 @@ void handle_display_message(JsonObject& data) {
         preferences.putString("disp_mode", String(display_mode_str));
     }
 
+    if (data.containsKey("customData")) {
+        JsonObject cd = data["customData"].as<JsonObject>();
+        if (!cd.isNull()) {
+            String l1 = cd.containsKey("customLine1") ? cd["customLine1"].as<String>() : String("");
+            String l2 = cd.containsKey("customLine2") ? cd["customLine2"].as<String>() : String("");
+            l1.trim();
+            l2.trim();
+            if (l1.length() > 21) l1 = l1.substring(0, 21);
+            if (l2.length() > 21) l2 = l2.substring(0, 21);
+            strncpy(display_custom_line1, l1.c_str(), sizeof(display_custom_line1) - 1);
+            display_custom_line1[sizeof(display_custom_line1) - 1] = '\0';
+            strncpy(display_custom_line2, l2.c_str(), sizeof(display_custom_line2) - 1);
+            display_custom_line2[sizeof(display_custom_line2) - 1] = '\0';
+            preferences.putString("disp_c1", l1);
+            preferences.putString("disp_c2", l2);
+        }
+    }
+
     // Appliquer sur l'ATmega (écran contrôlé par l'ATmega)
     send_display_data_to_atmega();
     send_status_message("Display config updated");
+}
+
+#if ENABLE_ATMEGA_UART
+#define ATMEGA_TFT_W 320
+#define ATMEGA_TFT_H 170
+#define WEB_IMG_W 128
+#define WEB_IMG_H 64
+
+static uint16_t webimg_pixel565(const uint8_t* pack, int sx, int sy) {
+    int bi = sy * (WEB_IMG_W / 8) + (sx >> 3);
+    int bit = (pack[bi] >> (7 - (sx & 7))) & 1;
+    return bit ? (uint16_t)0xFFFF : (uint16_t)0x0000;
+}
+
+static uint16_t map_packed565(const uint8_t* pack, uint16_t ox, uint16_t oy) {
+    const int footer_y0 = 76;
+    if ((int)oy >= footer_y0) {
+        return 0x0000;
+    }
+    const int offy = 5;
+    const int dst_h = 160;
+    if ((int)oy < offy || (int)oy >= offy + dst_h) {
+        return 0x0000;
+    }
+    int sx = (int)ox * WEB_IMG_W / ATMEGA_TFT_W;
+    int sy = ((int)oy - offy) * WEB_IMG_H / dst_h;
+    if (sx < 0) {
+        sx = 0;
+    }
+    if (sx >= WEB_IMG_W) {
+        sx = WEB_IMG_W - 1;
+    }
+    if (sy < 0) {
+        sy = 0;
+    }
+    if (sy >= WEB_IMG_H) {
+        sy = WEB_IMG_H - 1;
+    }
+    return webimg_pixel565(pack, sx, sy);
+}
+
+static void send_display_image_to_atmega(const uint8_t* packed1k) {
+    const uint32_t total_bytes = (uint32_t)ATMEGA_TFT_W * (uint32_t)ATMEGA_TFT_H * 2u;
+    send_atmega_command(CMD_SET_DISPLAY_IMAGE, nullptr, 0);
+    delay(15);
+
+    uint32_t sent = 0;
+    uint16_t seq = 0;
+    while (sent < total_bytes) {
+        uint32_t byte_off = sent;
+        uint32_t ps = byte_off / 2u;
+        uint16_t x = (uint16_t)(ps % ATMEGA_TFT_W);
+        uint16_t y = (uint16_t)(ps / ATMEGA_TFT_W);
+        uint16_t row_left = (uint16_t)(ATMEGA_TFT_W - x);
+        uint16_t px = 32;
+        if (px > row_left) {
+            px = row_left;
+        }
+        uint32_t remain = total_bytes - sent;
+        uint16_t nbytes = (uint16_t)(px * 2u);
+        if ((uint32_t)nbytes > remain) {
+            nbytes = (uint16_t)remain;
+            if (nbytes & 1u) {
+                nbytes = (uint16_t)(nbytes - 1u);
+            }
+            px = (uint16_t)(nbytes / 2u);
+        }
+        if (nbytes < 2u || px == 0) {
+            break;
+        }
+
+        uint8_t pkt[4 + 64];
+        pkt[0] = CMD_SET_DISPLAY_IMAGE_CHUNK;
+        pkt[1] = (uint8_t)(seq & 0xFF);
+        pkt[2] = (uint8_t)((seq >> 8) & 0xFF);
+        pkt[3] = (uint8_t)nbytes;
+        for (uint16_t i = 0; i < px; i++) {
+            uint16_t c = map_packed565(packed1k, (uint16_t)(x + i), y);
+            pkt[4 + i * 2] = (uint8_t)(c >> 8);
+            pkt[4 + i * 2 + 1] = (uint8_t)(c & 0xFF);
+        }
+        SerialAtmega.write(pkt, (size_t)(4 + nbytes));
+        SerialAtmega.write('\n');
+        SerialAtmega.flush();
+        sent += nbytes;
+        seq++;
+        delay(1);
+    }
+    Serial.printf("[IMG] atmega %u B (%u chunks)\n", (unsigned)sent, (unsigned)seq);
+}
+#endif
+
+void handle_display_image_message(JsonObject& doc) {
+#if !ENABLE_ATMEGA_UART
+    (void)doc;
+    send_status_message("ATmega UART disabled");
+#else
+    const char* b64 = doc["data"].as<const char*>();
+    if (!b64 || !b64[0]) {
+        send_status_message("display_image: missing data");
+        return;
+    }
+    size_t b64len = strlen(b64);
+    uint8_t dec[1100];
+    size_t declen = 0;
+    if (base64_decode(b64, b64len, dec, sizeof(dec), &declen) != 0) {
+        send_status_message("display_image: base64 error");
+        return;
+    }
+    if (declen != 1024) {
+        send_status_message("display_image: need 1024 B");
+        return;
+    }
+    send_display_image_to_atmega(dec);
+    if (strcmp(display_mode_str, "gif") != 0) {
+        strncpy(display_mode_str, "image", sizeof(display_mode_str) - 1);
+        display_mode_str[sizeof(display_mode_str) - 1] = '\0';
+        preferences.putString("disp_mode", String("image"));
+    }
+    send_display_data_to_atmega();
+    send_status_message("Display image OK");
+#endif
 }
 
 void send_config_to_web() {
@@ -1344,6 +1897,7 @@ void send_config_to_web() {
     JsonObject keys = doc.createNestedObject("keys");
     for (int r = 0; r < NUM_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
+            if (r == PROFILE_KEY_ROW && c == PROFILE_KEY_COL) continue;
             if (KEYMAP[r][c].length() > 0) {
                 String key_id = String(r) + "-" + String(c);
                 JsonObject key_obj = keys.createNestedObject(key_id);
@@ -1689,14 +2243,24 @@ void update_builtin_led_from_light() {
 #if LED_PWM_PIN >= 0
     // PWM LED externe (si présent)
     if (!backlight_enabled) {
-        ledcWrite(led_pwm_channel, 0);
+        ledcWrite(LED_PWM_PIN, 0);
     } else if (env_brightness_enabled) {
         // Suivre le fondu RVB (même enveloppe que les animations)
         uint8_t mx_pwm = max(led_current_r, max(led_current_g, led_current_b));
-        ledcWrite(led_pwm_channel, (uint32_t)mx_pwm * 1023 / 255);
+        ledcWrite(LED_PWM_PIN, (uint32_t)mx_pwm * 1023 / 255);
     }
 #endif
 }
+
+#if ENABLE_LED_STRIP
+// Appelé après update_builtin_led_from_light() lors d'un changement Web (variables led_* déclarées plus haut dans ce fichier).
+static void backlight_snap_strip_rgb_to_target(void) {
+    led_current_r = led_target_r;
+    led_current_g = led_target_g;
+    led_current_b = led_target_b;
+    render_backlight_strip_pixels();
+}
+#endif
 
 void update_per_key_leds() {
 #if ENABLE_LED_STRIP
@@ -1922,8 +2486,26 @@ void send_atmega_command(uint8_t cmd, uint8_t* payload, int payload_len) {
                 if (n < (int)sizeof(buf) - 2) snprintf(buf + n, sizeof(buf) - n, "]");
             }
         } else {
-            const char* names[] = {"", "READ_LIGHT", "SET_LED", "GET_LED", "UPDATE_DISPLAY", "SET_DISPLAY_DATA", "", "", "SET_IMAGE", "IMAGE_CHUNK", "ATMEGA_DEBUG", "ATMEGA_LOG"};
-            const char* name = (cmd < 12) ? names[cmd] : "?";
+            const char* names[] = {
+                "",
+                "READ_LIGHT",
+                "SET_LED",
+                "GET_LED",
+                "UPDATE_DISPLAY",
+                "SET_DISPLAY_DATA",
+                "",
+                "",
+                "SET_IMAGE",
+                "IMAGE_CHUNK",
+                "ATMEGA_DEBUG",
+                "ATMEGA_LOG",
+                "SET_LAST_KEY",
+                "SCREEN_MODE",
+                "PREPARE_SLEEP",
+                "RESUME_WAKE",
+            };
+            const char* name = (cmd < 16) ? names[cmd] : "?";
+            if (name && name[0] == '\0') name = "?";
             snprintf(buf, sizeof(buf), "CMD 0x%02X %s", cmd, name);
         }
         send_uart_log_to_web("tx", buf);
@@ -2030,16 +2612,9 @@ void send_last_key_to_atmega() {
         memcpy(&payload[pos], last_key.c_str(), len);
         pos += len;
     }
-    // Rétro-éclairage pour l'écran: selon env_brightness_enabled ou manuel
-    int back_en;
-    uint8_t back_val;
-    if (env_brightness_enabled) {
-        back_en = (backlight_enabled && light_is_dark) ? 1 : 0;
-        back_val = back_en ? (led_brightness & 0xFF) : 0;
-    } else {
-        back_en = backlight_enabled ? 1 : 0;
-        back_val = back_en ? (led_brightness & 0xFF) : 0;
-    }
+    // Rétroéclairage TFT ATmega: indépendant de env_brightness (réservé au strip NeoPixel).
+    int back_en = backlight_enabled ? 1 : 0;
+    uint8_t back_val = back_en ? (led_brightness & 0xFF) : 0;
     payload[pos++] = back_en & 0xFF;
     payload[pos++] = back_val;
     send_atmega_command(CMD_SET_LAST_KEY, payload, pos);
@@ -2057,7 +2632,7 @@ uint8_t count_configured_keys() {
 
 void send_display_data_to_atmega() {
     update_light_hysteresis_from_levels();
-    uint8_t payload[80];
+    uint8_t payload[120];
     int pos = 0;
     payload[pos++] = display_brightness;
     const char* mode = display_mode_str;
@@ -2082,16 +2657,25 @@ void send_display_data_to_atmega() {
         memcpy(&payload[pos], last_key_pressed.c_str(), last_key_len);
         pos += last_key_len;
     }
-    int back_en;
-    uint8_t back_val;
-    if (env_brightness_enabled) {
-        back_en = (backlight_enabled && light_is_dark) ? 1 : 0;
-        back_val = back_en ? (led_brightness & 0xFF) : 0;
-    } else {
-        back_en = backlight_enabled ? 1 : 0;
-        back_val = back_en ? (led_brightness & 0xFF) : 0;
-    }
+    int back_en = backlight_enabled ? 1 : 0;
+    uint8_t back_val = back_en ? (led_brightness & 0xFF) : 0;
     payload[pos++] = back_en & 0xFF;
     payload[pos++] = back_val;
+    uint8_t c1len = (uint8_t)strlen(display_custom_line1);
+    uint8_t c2len = (uint8_t)strlen(display_custom_line2);
+    if (c1len > 21) c1len = 21;
+    if (c2len > 21) c2len = 21;
+    if (pos + 2 + c1len + c2len <= (int)sizeof(payload)) {
+        payload[pos++] = c1len;
+        if (c1len) {
+            memcpy(&payload[pos], display_custom_line1, c1len);
+            pos += c1len;
+        }
+        payload[pos++] = c2len;
+        if (c2len) {
+            memcpy(&payload[pos], display_custom_line2, c2len);
+            pos += c2len;
+        }
+    }
     send_atmega_command(CMD_SET_DISPLAY_DATA, payload, pos);
 }

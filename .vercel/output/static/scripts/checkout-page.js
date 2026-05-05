@@ -47,13 +47,14 @@ function saveCartQty(qty) {
     localStorage.setItem(CART_KEY, JSON.stringify(cart));
   }
   if (typeof window.updateCartBadge === 'function') window.updateCartBadge();
-  if (window.FlexPadCart?.updateCartUI) window.FlexPadCart.updateCartUI();
+  // Ne pas appeler updateCartUI() ici : il dispatche flexpad:cart-updated → syncFromCart → updateTotal → saveCartQty (récursion).
+  if (window.FlexPadCart?.refreshCartWidget) window.FlexPadCart.refreshCartWidget();
 }
 
 function clearCart() {
   localStorage.removeItem(CART_KEY);
   if (typeof window.updateCartBadge === 'function') window.updateCartBadge();
-  if (window.FlexPadCart?.updateCartUI) window.FlexPadCart.updateCartUI();
+  if (window.FlexPadCart?.refreshCartWidget) window.FlexPadCart.refreshCartWidget();
 }
 
 function formatCad(value) {
@@ -222,6 +223,7 @@ function initCheckoutPage() {
         postal: String(fd.get('postal') || ''),
       };
       let displayRef = ref;
+      let createdOrderId = null;
       try {
         const sessRes = await fetch('/api/auth/session', { credentials: 'same-origin' });
         const sess = await sessRes.json();
@@ -256,27 +258,65 @@ function initCheckoutPage() {
           if (saveRes.ok) {
             const j = await saveRes.json();
             if (j.reference) displayRef = j.reference;
+            if (j.orderId) createdOrderId = j.orderId;
           }
         }
       } catch (err) {
         console.warn('[checkout] enregistrement commande', err);
       }
       if (orderRefEl) orderRefEl.textContent = displayRef;
-      const detailsWrap = document.getElementById('checkout-confirmation-details');
-      const detailsText = document.getElementById('checkout-confirmation-contact');
-      if (detailsWrap && detailsText) {
-        const lines = [
-          shipping.name && `Nom : ${shipping.name}`,
-          shipping.email && `Courriel : ${shipping.email}`,
-          shipping.phone && `Téléphone : ${shipping.phone}`,
-          (shipping.address || shipping.city || shipping.postal) &&
-            `Adresse : ${[shipping.address, shipping.city, shipping.postal].filter(Boolean).join(', ')}`,
-        ].filter(Boolean);
-        detailsText.textContent = lines.join(' • ');
-        detailsWrap.hidden = lines.length === 0;
+
+      // Démarrer le vrai paiement Stripe (redirige vers Checkout)
+      try {
+        try {
+          sessionStorage.setItem('flexpad_last_reference', displayRef);
+          if (createdOrderId) sessionStorage.setItem('flexpad_last_order_id', String(createdOrderId));
+        } catch {}
+
+        const cartPayload = {
+          items: cart.items.length
+            ? cart.items
+            : [
+                {
+                  id: 'flexpad',
+                  name: 'FlexPad',
+                  tagline: 'Pavé numérique programmable',
+                  price: unitPrice,
+                  quantity: qty,
+                },
+              ],
+          total: unitPrice * qty,
+        };
+        const stripeRes = await fetch('/api/stripe/checkout-session', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: createdOrderId,
+            reference: displayRef,
+            cart: cartPayload,
+          }),
+        });
+        const stripeJson = await stripeRes.json();
+        if (stripeRes.ok && stripeJson && stripeJson.url) {
+          try {
+            if (stripeJson.reference) sessionStorage.setItem('flexpad_last_reference', String(stripeJson.reference));
+          } catch {}
+          window.location.href = stripeJson.url;
+          return;
+        }
+        const msg =
+          (stripeJson && (stripeJson.error || stripeJson.message)) ||
+          `Erreur paiement (HTTP ${stripeRes.status})`;
+        alert(msg);
+        return;
+      } catch (err) {
+        console.warn('[checkout] stripe', err);
+        alert("Paiement indisponible pour l'instant. Réessaie dans quelques secondes.");
+        return;
       }
-      clearCart();
-      showStep(3);
+
+      // Ne jamais montrer la confirmation si le paiement n'a pas démarré.
     },
     { signal }
   );

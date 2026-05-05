@@ -101,7 +101,6 @@
   height: 2px;
   top: 15%;
   left: 10%;
-  transform: rotate(-25deg);
   animation: circuitFade 4s ease-in-out infinite;
 }
 
@@ -110,7 +109,6 @@
   height: 2px;
   top: 25%;
   right: 15%;
-  transform: rotate(20deg);
   animation: circuitFade 4s ease-in-out 0.5s infinite;
 }
 
@@ -119,7 +117,6 @@
   height: 2px;
   bottom: 30%;
   left: 8%;
-  transform: rotate(15deg);
   animation: circuitFade 4s ease-in-out 1s infinite;
 }
 
@@ -128,7 +125,6 @@
   height: 2px;
   bottom: 20%;
   right: 12%;
-  transform: rotate(-30deg);
   animation: circuitFade 4s ease-in-out 1.5s infinite;
 }
 
@@ -137,7 +133,6 @@
   height: 2px;
   top: 50%;
   left: 5%;
-  transform: rotate(45deg);
   animation: circuitFade 4s ease-in-out 2s infinite;
 }
 
@@ -146,7 +141,6 @@
   height: 2px;
   top: 70%;
   right: 8%;
-  transform: rotate(-15deg);
   animation: circuitFade 4s ease-in-out 2.5s infinite;
 }
 
@@ -155,7 +149,6 @@
   height: 2px;
   top: 40%;
   right: 5%;
-  transform: rotate(35deg);
   animation: circuitFade 4s ease-in-out 0.8s infinite;
 }
 

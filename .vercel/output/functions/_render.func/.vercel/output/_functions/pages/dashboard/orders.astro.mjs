@@ -1,9 +1,9 @@
 import { c as createComponent, g as renderComponent, r as renderTemplate, d as createAstro, m as maybeRenderHead, F as Fragment, e as addAttribute } from '../../chunks/astro/server_DYDqy7ws.mjs';
-import { $ as $$Layout } from '../../chunks/Layout_QyV7CE-J.mjs';
+import { $ as $$Layout } from '../../chunks/Layout_e5wlI47w.mjs';
 import { $ as $$DashboardChrome } from '../../chunks/DashboardChrome_CnSmYUvn.mjs';
-import { g as getSession } from '../../chunks/server_CatkvZha.mjs';
+import { g as getSession } from '../../chunks/server_BNGpEuMe.mjs';
 import { eq, desc } from 'drizzle-orm';
-import { d as db, o as orders } from '../../chunks/index_CRES2LJX.mjs';
+import { d as db, o as orders } from '../../chunks/index_Dzm_i-4A.mjs';
 import { f as formatCadFromCents } from '../../chunks/orders_C_9vI6qd.mjs';
 export { renderers } from '../../renderers.mjs';
 
@@ -48,7 +48,9 @@ La base de données est désactivée pour le déploiement Vercel: les commandes 
       year: "numeric",
       month: "long",
       day: "numeric"
-    }) : ""} </p> </div> <div class="dash-order-card__totals"> <span${addAttribute(`dash-status dash-status--${order.status}`, "class")}>${statusLabel(order.status)}</span> <strong class="dash-order-card__price">${formatCadFromCents(order.totalCents)}</strong> <span class="dash-order-card__qty">${qty} article${qty !== 1 ? "s" : ""}</span> </div> </header> ${items.length > 0 && renderTemplate`<ul class="dash-order-items"> ${items.map((item, idx) => renderTemplate`<li> <span>${item.name ?? `Article ${idx + 1}`}</span> <span>Qté ${item.quantity ?? 0}</span> <span> ${formatCadFromCents(Math.round((item.price ?? 0) * (item.quantity ?? 0) * 100))} </span> </li>`)} </ul>`} </article>`;
+    }) : ""} </p> ${(order.stripePaymentIntentId || order.stripeCheckoutSessionId) && renderTemplate`<p class="dashboard-note" style="margin: 0.5rem 0 0;"> ${order.stripePaymentIntentId && renderTemplate`${renderComponent($$result3, "Fragment", Fragment, {}, { "default": async ($$result4) => renderTemplate`
+Paiement Stripe: <code>${order.stripePaymentIntentId}</code> ` })}`} ${order.stripePaymentIntentId && order.stripeCheckoutSessionId ? " · " : ""} ${order.stripeCheckoutSessionId && renderTemplate`${renderComponent($$result3, "Fragment", Fragment, {}, { "default": async ($$result4) => renderTemplate`
+Session: <code>${order.stripeCheckoutSessionId}</code> ` })}`} </p>`} </div> <div class="dash-order-card__totals"> <span${addAttribute(`dash-status dash-status--${order.status}`, "class")}>${statusLabel(order.status)}</span> <strong class="dash-order-card__price">${formatCadFromCents(order.totalCents)}</strong> <span class="dash-order-card__qty">${qty} article${qty !== 1 ? "s" : ""}</span> </div> </header> ${items.length > 0 && renderTemplate`<ul class="dash-order-items"> ${items.map((item, idx) => renderTemplate`<li> <span>${item.name ?? `Article ${idx + 1}`}</span> <span>Qté ${item.quantity ?? 0}</span> <span> ${formatCadFromCents(Math.round((item.price ?? 0) * (item.quantity ?? 0) * 100))} </span> </li>`)} </ul>`} </article>`;
   })} </div>`}` })} </div> ` })}`;
 }, "C:/Users/Mathieu/OneDrive - Cegep Gerald-Godin/Cegep Gerald-Godin/Session_6/Projet_Finale/Numpad/Projet_Final/src/pages/dashboard/orders/index.astro", void 0);
 const $$file = "C:/Users/Mathieu/OneDrive - Cegep Gerald-Godin/Cegep Gerald-Godin/Session_6/Projet_Finale/Numpad/Projet_Final/src/pages/dashboard/orders/index.astro";

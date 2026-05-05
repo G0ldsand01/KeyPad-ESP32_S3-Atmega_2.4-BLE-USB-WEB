@@ -187,9 +187,14 @@ function renderCartPreview() {
   }
 }
 
-function updateCartUI() {
+/** Mise à jour badge + aperçu sans événement (évite boucle avec checkout-page). */
+function refreshCartWidget() {
   updateCartBadge();
   renderCartPreview();
+}
+
+function updateCartUI() {
+  refreshCartWidget();
   document.dispatchEvent(new CustomEvent('flexpad:cart-updated'));
 }
 
@@ -289,6 +294,7 @@ window.FlexPadCart = {
   showRemoveOverlay: showCartRemoveOverlay,
   getCart,
   updateCartBadge,
+  refreshCartWidget,
   updateCartUI,
 };
 window.updateCartBadge = updateCartBadge;

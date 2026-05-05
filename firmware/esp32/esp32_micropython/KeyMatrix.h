@@ -15,7 +15,16 @@ public:
     void begin();
     void scan();
 
-    // État actuel d'une touche (pour détection combo PROFILE+0)
+    // Veille : toutes les colonnes LOW, lignes pull-up (réveil EXT1 sur ligne LOW).
+    void prepareForDeepSleepWake();
+
+    // Scan immédiat sans debounce (après réveil EXT1 : distinguer vraie touche / glitch).
+    bool anyKeyPressedRaw();
+
+    // Plusieurs lectures espacées : 2 hits consécutifs requis (rejette glitch court au réveil).
+    bool anyKeyPressedRawStable();
+
+    // État actuel d'une touche (pour détection combo PROFILE+1, voir Config PROFILE_KEY_*)
     bool isKeyPressed(uint8_t row, uint8_t col) const;
 
     void setCallback(KeyCallback cb) { _callback = cb; }

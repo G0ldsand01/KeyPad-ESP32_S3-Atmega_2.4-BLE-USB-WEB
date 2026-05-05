@@ -1,5 +1,5 @@
 import { c as createComponent, r as renderTemplate, h as defineScriptVars, g as renderComponent, d as createAstro, m as maybeRenderHead } from '../chunks/astro/server_DYDqy7ws.mjs';
-import { $ as $$Layout } from '../chunks/Layout_QyV7CE-J.mjs';
+import { $ as $$Layout } from '../chunks/Layout_e5wlI47w.mjs';
 export { renderers } from '../renderers.mjs';
 
 var __freeze = Object.freeze;

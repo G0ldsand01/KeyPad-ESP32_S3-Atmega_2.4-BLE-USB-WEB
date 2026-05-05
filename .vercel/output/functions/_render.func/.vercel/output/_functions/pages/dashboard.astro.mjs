@@ -1,9 +1,9 @@
 import { c as createComponent, g as renderComponent, r as renderTemplate, d as createAstro, m as maybeRenderHead } from '../chunks/astro/server_DYDqy7ws.mjs';
-import { $ as $$Layout } from '../chunks/Layout_QyV7CE-J.mjs';
+import { $ as $$Layout } from '../chunks/Layout_e5wlI47w.mjs';
 import { $ as $$DashboardChrome } from '../chunks/DashboardChrome_CnSmYUvn.mjs';
-import { g as getSession } from '../chunks/server_CatkvZha.mjs';
+import { g as getSession } from '../chunks/server_BNGpEuMe.mjs';
 import { eq, desc } from 'drizzle-orm';
-import { d as db, o as orders } from '../chunks/index_CRES2LJX.mjs';
+import { d as db, o as orders } from '../chunks/index_Dzm_i-4A.mjs';
 import { f as formatCadFromCents } from '../chunks/orders_C_9vI6qd.mjs';
 export { renderers } from '../renderers.mjs';
 

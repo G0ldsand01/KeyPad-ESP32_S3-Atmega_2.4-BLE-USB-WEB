@@ -206,7 +206,8 @@ html {
   position: fixed;
   top: 1rem;
   right: max(1rem, env(safe-area-inset-right));
-  z-index: 1200;
+  /* Au-dessus de .glass-nav-dock (z-index 2100) pour que le panier et le dropdown soient cliquables */
+  z-index: 2200;
   display: flex;
   flex-direction: row-reverse;
   align-items: flex-start;
@@ -896,7 +897,6 @@ html.cart-overlay-open {
   height: 2px;
   top: 15%;
   left: 10%;
-  transform: rotate(-25deg);
   animation: circuitFade 4s ease-in-out infinite;
 }
 
@@ -905,7 +905,6 @@ html.cart-overlay-open {
   height: 2px;
   top: 25%;
   right: 15%;
-  transform: rotate(20deg);
   animation: circuitFade 4s ease-in-out 0.5s infinite;
 }
 
@@ -914,7 +913,6 @@ html.cart-overlay-open {
   height: 2px;
   bottom: 30%;
   left: 8%;
-  transform: rotate(15deg);
   animation: circuitFade 4s ease-in-out 1s infinite;
 }
 
@@ -923,7 +921,6 @@ html.cart-overlay-open {
   height: 2px;
   bottom: 20%;
   right: 12%;
-  transform: rotate(-30deg);
   animation: circuitFade 4s ease-in-out 1.5s infinite;
 }
 
@@ -932,7 +929,6 @@ html.cart-overlay-open {
   height: 2px;
   top: 50%;
   left: 5%;
-  transform: rotate(45deg);
   animation: circuitFade 4s ease-in-out 2s infinite;
 }
 
@@ -941,7 +937,6 @@ html.cart-overlay-open {
   height: 2px;
   top: 70%;
   right: 8%;
-  transform: rotate(-15deg);
   animation: circuitFade 4s ease-in-out 2.5s infinite;
 }
 
@@ -950,7 +945,6 @@ html.cart-overlay-open {
   height: 2px;
   top: 40%;
   right: 5%;
-  transform: rotate(35deg);
   animation: circuitFade 4s ease-in-out 0.8s infinite;
 }
 
@@ -1078,13 +1072,40 @@ button.btn-primary:hover {
   transform: translateY(-3px);
 }
 
-.scroll-indicator {
+.hero-text-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Parallaxe au scroll (JS) — pas sur .reveal directement */
+[data-scroll-parallax] {
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-scroll-parallax] {
+    transform: none !important;
+    will-change: auto;
+  }
+}
+
+.scroll-indicator-anchor {
   position: absolute;
   bottom: max(1rem, env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
-  animation: bounce 2s ease-in-out infinite;
   z-index: 5;
+}
+
+.scroll-indicator-parallax {
+  display: block;
+}
+
+.scroll-indicator {
+  position: relative;
+  animation: bounce 2s ease-in-out infinite;
 }
 
 .scroll-indicator svg {
@@ -1579,8 +1600,8 @@ button.btn-primary:hover {
 }
 
 @keyframes bounce {
-  0%, 100% { transform: translateX(-50%) translateY(0); }
-  50% { transform: translateX(-50%) translateY(10px); }
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(10px); }
 }
 
 .reveal {

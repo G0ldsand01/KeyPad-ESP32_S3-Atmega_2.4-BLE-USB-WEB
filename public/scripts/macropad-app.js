@@ -2,8 +2,11 @@
 let config = {
     rows: 5,
     cols: 4,
-    profiles: { 'Profil 1': { keys: {} }, 'Configuration': { keys: {} } },
-    activeProfile: 'Profil 1',
+    // Présentation: 2 profils par défaut alignés avec le firmware (DEMO et USER1).
+    // - DEMO  : profil démo (QR sur l'écran ATmega + cycle d'animations LED)
+    // - USER1 : profil utilisateur (UI data sur l'écran + animations selon Web UI)
+    profiles: { 'DEMO': { keys: {} }, 'USER1': { keys: {} } },
+    activeProfile: 'DEMO',
     outputMode: 'usb',
     backlight: {
         enabled: true,
@@ -66,7 +69,8 @@ let config = {
             showCustom1: false,
             showCustom2: false,
             customLine1: '',
-            customLine2: ''
+            customLine2: '',
+            previewAccent: '#d4af37'
         }
     },
     connected: false,
@@ -90,6 +94,9 @@ let backlightPickerH = 30;
 let backlightPickerS = 1;
 let backlightPickerV = 1;
 let backlightColorDragging = null; // 'hue' | 'sv' | null
+let backlightPopoverRepositionHandler = null;
+let backlightUiSyncTimer = null;
+let backlightColorPopoverIgnoreDocCloseUntil = 0;
 let statusUpdatesPausedUntil = 0;
 let lastBleWriteTime = 0;
 const BLE_MIN_WRITE_INTERVAL_MS = 800; // Éviter "GATT operation already in progress" / NotSupportedError
@@ -103,19 +110,44 @@ function pauseStatusUpdatesUntil(timestamp) {
 
 function ensureProfiles() {
     if (!config.profiles || typeof config.profiles !== 'object') config.profiles = {};
-    if (Object.keys(config.profiles).length === 0) config.profiles['Profil 1'] = { keys: {} };
-    if (!config.profiles['Configuration']) config.profiles['Configuration'] = { keys: {} };
-    if (!config.profiles['Configuration'].keys) config.profiles['Configuration'].keys = {};
-    const cfgKeys = config.profiles['Configuration'].keys;
-    if (config.profiles['Profil 2']) {
-        Object.assign(cfgKeys, config.profiles['Profil 2'].keys || {});
-        delete config.profiles['Profil 2'];
-        if (config.activeProfile === 'Profil 2') config.activeProfile = 'Configuration';
+
+    // Migration des anciens noms de profils -> DEMO / USER1.
+    // 'Profil 1' (ancien défaut) -> 'USER1' (profil utilisateur configurable).
+    // 'Configuration' / 'Profil 2' (anciens) -> on transfère les keys dans USER1 puis on supprime.
+    const legacyProfil1 = config.profiles['Profil 1'];
+    const legacyConfig = config.profiles['Configuration'];
+    const legacyProfil2 = config.profiles['Profil 2'];
+    if (legacyProfil1 && !config.profiles['USER1']) {
+        config.profiles['USER1'] = { keys: { ...(legacyProfil1.keys || {}) } };
+        delete config.profiles['Profil 1'];
+        if (config.activeProfile === 'Profil 1') config.activeProfile = 'USER1';
     }
-    // Plus de navDefaults (flèches) — pavé numérique pur par défaut
-    delete cfgKeys['0-0']; // Toujours supprimer 0-0 car c'est le profile switch
+    if (legacyConfig) {
+        if (!config.profiles['USER1']) config.profiles['USER1'] = { keys: {} };
+        config.profiles['USER1'].keys = { ...(config.profiles['USER1'].keys || {}), ...(legacyConfig.keys || {}) };
+        delete config.profiles['Configuration'];
+        if (config.activeProfile === 'Configuration') config.activeProfile = 'USER1';
+    }
+    if (legacyProfil2) {
+        if (!config.profiles['USER1']) config.profiles['USER1'] = { keys: {} };
+        config.profiles['USER1'].keys = { ...(config.profiles['USER1'].keys || {}), ...(legacyProfil2.keys || {}) };
+        delete config.profiles['Profil 2'];
+        if (config.activeProfile === 'Profil 2') config.activeProfile = 'USER1';
+    }
+
+    // S'assurer que les 2 profils par défaut existent (DEMO + USER1).
+    if (!config.profiles['DEMO']) config.profiles['DEMO'] = { keys: {} };
+    if (!config.profiles['USER1']) config.profiles['USER1'] = { keys: {} };
+    if (!config.profiles['DEMO'].keys) config.profiles['DEMO'].keys = {};
+    if (!config.profiles['USER1'].keys) config.profiles['USER1'].keys = {};
+
+    // Plus de navDefaults (flèches) — pavé numérique pur par défaut.
+    // 0-0 réservé à PROFILE (switch firmware): on l'efface partout pour éviter
+    // qu'un ancien Web UI override la touche de switch.
+    Object.values(config.profiles).forEach((p) => { if (p && p.keys) delete p.keys['0-0']; });
+
     if (!config.activeProfile || !config.profiles[config.activeProfile]) {
-        config.activeProfile = Object.keys(config.profiles)[0] || 'Profil 1';
+        config.activeProfile = config.profiles['DEMO'] ? 'DEMO' : Object.keys(config.profiles)[0] || 'DEMO';
     }
 }
 
@@ -125,16 +157,16 @@ const NAV_DISPLAY_KEYS = ['1-1', '2-0', '2-1', '2-2', '3-1'];
 function getCurrentKeys() {
     ensureProfiles();
     const cur = config.profiles[config.activeProfile].keys || {};
-    // Les touches row0 (0-1, 0-2, 0-3) sont maintenant configurables normalement dans chaque profil
-    // Plus besoin de les fusionner avec le profil Configuration
+    // Les touches row0 (0-1, 0-2, 0-3) sont configurables normalement dans chaque profil
     return { ...cur };
 }
 
 function migrateConfigToProfiles() {
     if (config.keys && typeof config.keys === 'object') {
         if (!config.profiles) config.profiles = {};
-        config.profiles['Profil 1'] = { keys: { ...config.keys } };
-        config.activeProfile = 'Profil 1';
+        // Ancien format à plat -> on met les keys dans USER1 (profil utilisateur).
+        config.profiles['USER1'] = { keys: { ...config.keys } };
+        config.activeProfile = 'USER1';
         delete config.keys;
     }
 }
@@ -286,14 +318,14 @@ function initializeGrid() {
                 ps.appendChild(lbl);
                 ps.appendChild(val);
                 ps.addEventListener('click', (e) => {
-                    e.stopPropagation(); // Empêcher la propagation
+                    e.stopPropagation();
                     switchToNextProfile();
                 });
                 grid.appendChild(ps);
                 keysCreated++;
                 continue;
             }
-            
+
             const keyButton = document.createElement('div');
             keyButton.className = 'key-button';
             keyButton.id = `key-${keyId}`;
@@ -304,7 +336,7 @@ function initializeGrid() {
             
             if (keyId === '4-0') {
                 keyButton.classList.add('key-wide');
-                keyButton.dataset.spanKeys = '4-0,4-2'; // 4-0 prend 2 cols, 4-1 est la touche "."
+                keyButton.dataset.spanKeys = '4-0,4-2';
                 colSpan = 2;
             } else if (keyId === '1-3') {
                 keyButton.classList.add('key-tall');
@@ -334,7 +366,7 @@ function initializeGrid() {
             
             keyButton.appendChild(keyLabel);
             keyButton.appendChild(keyValue);
-            // Empêcher la propagation pour les touches row0 (sauf 0-0 qui est géré séparément)
+            // Empêcher la propagation pour les touches (0-0 = Profil, handler séparé)
             keyButton.addEventListener('click', (e) => {
                 e.stopPropagation(); // Empêcher la propagation vers d'autres handlers
                 selectKey(mainKeyId, row, matrixCol);
@@ -367,8 +399,7 @@ function initializeGrid() {
 
 // Sélectionner une touche
 function selectKey(keyId, row, col) {
-    // Protection: Ne jamais switcher le profil - le bouton 0-0 a son propre handler
-    // Les touches row0 (0-1, 0-2, 0-3) sont maintenant configurables normalement
+    // Le bouton Profil (0-0) a son propre handler
     if (selectedKey) {
         const el = document.getElementById(`key-${selectedKey}`);
         if (el) {
@@ -1114,7 +1145,9 @@ function handleESP32Message(data) {
             if (data.keys && typeof data.keys === 'object') {
                 hadKeys = true;
                 ensureProfiles();
-                const profile = config.profiles['Profil 1'] || config.profiles[config.activeProfile];
+                // Le firmware ne renvoie qu'un set de keys; on l'applique au profil USER1
+                // (profil utilisateur configurable). DEMO reste vierge côté Web UI.
+                const profile = config.profiles['USER1'] || config.profiles[config.activeProfile];
                 if (profile) {
                     profile.keys = {};
                     for (const [keyId, val] of Object.entries(data.keys)) {
@@ -1160,11 +1193,11 @@ function handleESP32Message(data) {
                 saveConfig();
                 if (hadKeys) {
                     initializeGrid();
-                    updateDisplayInfo();
                     populateProfileSelect();
                 }
                 console.log('[DEBUG] [WEB_UI] Config from device applied to UI');
             }
+            updateDisplayInfo();
             break;
         }
         case 'status':
@@ -1283,7 +1316,7 @@ function loadConfig() {
     applyBacklightStateToUI();
 
     if (savedConfig.display) {
-        const defCustom = { showProfile: true, showBattery: true, showMode: true, showKeys: true, showBacklight: true, showCustom1: false, showCustom2: false, customLine1: '', customLine2: '' };
+        const defCustom = { showProfile: true, showBattery: true, showMode: true, showKeys: true, showBacklight: true, showCustom1: false, showCustom2: false, customLine1: '', customLine2: '', previewAccent: '#d4af37' };
         config.display = { mode: 'data', imageData: null, gifFrames: [], ...savedConfig.display };
         config.display.customData = { ...defCustom, ...(savedConfig.display.customData || {}) };
         const d = config.display.brightness ?? 128;
@@ -1292,6 +1325,7 @@ function loadConfig() {
         const pv = document.getElementById('display-brightness-value');
         if (sl) sl.value = pct;
         if (pv) pv.textContent = pct + '%';
+        syncDisplayPreview();
     }
     
     if (savedConfig.fingerprint) {
@@ -1609,23 +1643,95 @@ function setBacklightColorTab(name) {
     });
 }
 
+function scheduleBacklightLiveSync() {
+    if (backlightUiSyncTimer) clearTimeout(backlightUiSyncTimer);
+    backlightUiSyncTimer = setTimeout(async () => {
+        backlightUiSyncTimer = null;
+        saveConfig();
+        if (config.connected) {
+            try {
+                await sendBacklightConfig();
+            } catch (e) {
+                console.warn('scheduleBacklightLiveSync', e);
+            }
+        }
+    }, 480);
+}
+
+function positionBacklightColorPopover() {
+    const pop = document.getElementById('backlight-color-popover');
+    const trg = document.getElementById('backlight-color-trigger');
+    if (!pop || !trg || pop.hidden) return;
+    const r = trg.getBoundingClientRect();
+    const margin = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    pop.style.position = 'fixed';
+    pop.style.zIndex = '6000';
+    const estW = Math.min(pop.scrollWidth || 440, vw - margin * 2);
+    let left = r.left;
+    if (left + estW > vw - margin) left = vw - estW - margin;
+    if (left < margin) left = margin;
+    let top = r.bottom + margin;
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+    pop.style.right = 'auto';
+    requestAnimationFrame(() => {
+        const pr = pop.getBoundingClientRect();
+        if (pr.bottom > vh - margin) {
+            const up = r.top - pr.height - margin;
+            if (up >= margin) {
+                pop.style.top = `${Math.round(up)}px`;
+            } else {
+                pop.style.top = `${Math.round(margin)}px`;
+                pop.style.maxHeight = `${Math.round(vh - margin * 2)}px`;
+                pop.style.overflowY = 'auto';
+            }
+        }
+    });
+}
+
+function bindBacklightPopoverLayoutListeners() {
+    if (backlightPopoverRepositionHandler) return;
+    backlightPopoverRepositionHandler = () => positionBacklightColorPopover();
+    window.addEventListener('scroll', backlightPopoverRepositionHandler, true);
+    window.addEventListener('resize', backlightPopoverRepositionHandler);
+}
+
+function unbindBacklightPopoverLayoutListeners() {
+    if (!backlightPopoverRepositionHandler) return;
+    window.removeEventListener('scroll', backlightPopoverRepositionHandler, true);
+    window.removeEventListener('resize', backlightPopoverRepositionHandler);
+    backlightPopoverRepositionHandler = null;
+}
+
 function openBacklightColorPopover() {
     const pop = document.getElementById('backlight-color-popover');
     const trg = document.getElementById('backlight-color-trigger');
     if (!pop || !trg) return;
     syncBacklightPickerHsvFromConfig();
     refreshBacklightColorUI();
+    backlightColorPopoverIgnoreDocCloseUntil = Date.now() + 350;
     pop.hidden = false;
     trg.setAttribute('aria-expanded', 'true');
     setBacklightColorTab('wheel');
+    requestAnimationFrame(() => {
+        positionBacklightColorPopover();
+        bindBacklightPopoverLayoutListeners();
+    });
 }
 
 function closeBacklightColorPopover() {
     const pop = document.getElementById('backlight-color-popover');
     const trg = document.getElementById('backlight-color-trigger');
-    if (pop) pop.hidden = true;
+    if (pop) {
+        pop.hidden = true;
+        pop.style.maxHeight = '';
+        pop.style.overflowY = '';
+    }
     if (trg) trg.setAttribute('aria-expanded', 'false');
     backlightColorDragging = null;
+    unbindBacklightPopoverLayoutListeners();
 }
 
 function applyBacklightStateToUI() {
@@ -1708,12 +1814,21 @@ function setupBacklightColorPicker() {
         const { x, y } = canvasEventToLocal(wheel, ev);
         const cx = wheel.width / 2;
         const cy = wheel.height / 2;
-        const dx = x - cx;
-        const dy = y - cy;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        let dx = x - cx;
+        let dy = y - cy;
+        let dist = Math.sqrt(dx * dx + dy * dy);
         const rOuter = Math.min(cx, cy) - 6;
         const rInner = rOuter * 0.52;
-        if (dist < rInner || dist > rOuter + 8) return;
+        if (dist < 6) return;
+        if (dist > rOuter + 10) {
+            const s = (rOuter + 4) / dist;
+            dx *= s;
+            dy *= s;
+            dist = Math.sqrt(dx * dx + dy * dy);
+        }
+        if (dist < rInner) {
+            // Clic vers le centre : garder la teinte sous le curseur (anneau étroit sur petits écrans).
+        }
         backlightPickerH = (Math.atan2(dy, dx) * 180) / Math.PI;
         if (backlightPickerH < 0) backlightPickerH += 360;
         const { r, g, b } = hsvToRgb(backlightPickerH, backlightPickerS, backlightPickerV);
@@ -1815,6 +1930,7 @@ function setupBacklightColorPicker() {
 
     document.addEventListener('click', (e) => {
         if (!pop || pop.hidden) return;
+        if (Date.now() < backlightColorPopoverIgnoreDocCloseUntil) return;
         if (pop.contains(e.target) || (trigger && trigger.contains(e.target))) return;
         closeBacklightColorPopover();
     });
@@ -1828,28 +1944,28 @@ function setupBacklightControls() {
 
     const brightnessSlider = document.getElementById('backlight-brightness');
     const brightnessValue = document.getElementById('brightness-value');
-    if (!brightnessSlider || !brightnessValue) return;
-    
-    brightnessSlider.addEventListener('input', (e) => {
-        const percent = parseInt(e.target.value, 10) || 0;
-        brightnessValue.textContent = percent + '%';
-        config.backlight.brightness = Math.round((percent / 100) * 255);
-    });
+    if (brightnessSlider && brightnessValue) {
+        brightnessSlider.addEventListener('input', (e) => {
+            const percent = parseInt(e.target.value, 10) || 0;
+            brightnessValue.textContent = percent + '%';
+            config.backlight.brightness = Math.round((percent / 100) * 255);
+            scheduleBacklightLiveSync();
+        });
+    }
     
     const be = document.getElementById('backlight-enabled');
-    if (be) be.addEventListener('change', (e) => { config.backlight.enabled = e.target.checked; saveConfig(); });
+    if (be) be.addEventListener('change', (e) => { config.backlight.enabled = e.target.checked; scheduleBacklightLiveSync(); });
     const ab = document.getElementById('auto-brightness');
-    if (ab) ab.addEventListener('change', (e) => { config.backlight.autoBrightness = e.target.checked; saveConfig(); });
+    if (ab) ab.addEventListener('change', (e) => { config.backlight.autoBrightness = e.target.checked; scheduleBacklightLiveSync(); });
     const eb = document.getElementById('env-brightness');
     if (eb) {
         eb.addEventListener('change', (e) => { 
             config.backlight.envBrightness = e.target.checked; 
-            saveConfig(); 
-            // Si on active le mode environnement, désactiver auto-brightness
             if (e.target.checked && ab) {
                 ab.checked = false;
                 config.backlight.autoBrightness = false;
             }
+            scheduleBacklightLiveSync();
         });
     }
     const abb = document.getElementById('apply-backlight-btn');
@@ -2303,7 +2419,7 @@ function setupDisplayImageUpload() {
         saveConfig();
     });
 
-    if (remove) remove.addEventListener('click', () => {
+    if (remove) remove.addEventListener('click', async () => {
         config.display.imageData = null;
         config.display.gifFrames = [];
         config.display.gifDelays = [];
@@ -2313,6 +2429,14 @@ function setupDisplayImageUpload() {
         if (info) info.textContent = '';
         input.value = '';
         saveConfig();
+        syncDisplayPreview();
+        if (config.connected) {
+            try {
+                await sendDisplayConfig();
+            } catch (e) {
+                console.warn('[Display] sendDisplayConfig après suppression image', e);
+            }
+        }
     });
 
     if (modeSel) modeSel.addEventListener('change', () => {
@@ -2332,13 +2456,41 @@ function setupDisplayCustomData() {
                 if (!config.display.customData) config.display.customData = {};
                 config.display.customData[key] = el.checked;
                 saveConfig();
+                syncDisplayPreview();
             });
         }
     }
+    const accentIn = document.getElementById('display-preview-accent');
+    if (accentIn) {
+        accentIn.value = normalizeDisplayPreviewAccent(cd.previewAccent);
+        accentIn.addEventListener('input', () => {
+            if (!config.display.customData) config.display.customData = {};
+            config.display.customData.previewAccent = normalizeDisplayPreviewAccent(accentIn.value);
+            saveConfig();
+            syncDisplayPreview();
+        });
+    }
     const l1 = document.getElementById('display-custom-line1');
     const l2 = document.getElementById('display-custom-line2');
-    if (l1) { if (cd.customLine1 != null) l1.value = cd.customLine1; l1.addEventListener('input', () => { if (!config.display.customData) config.display.customData = {}; config.display.customData.customLine1 = l1.value; saveConfig(); }); }
-    if (l2) { if (cd.customLine2 != null) l2.value = cd.customLine2; l2.addEventListener('input', () => { if (!config.display.customData) config.display.customData = {}; config.display.customData.customLine2 = l2.value; saveConfig(); }); }
+    if (l1) {
+        if (cd.customLine1 != null) l1.value = cd.customLine1;
+        l1.addEventListener('input', () => {
+            if (!config.display.customData) config.display.customData = {};
+            config.display.customData.customLine1 = l1.value;
+            saveConfig();
+            syncDisplayPreview();
+        });
+    }
+    if (l2) {
+        if (cd.customLine2 != null) l2.value = cd.customLine2;
+        l2.addEventListener('input', () => {
+            if (!config.display.customData) config.display.customData = {};
+            config.display.customData.customLine2 = l2.value;
+            saveConfig();
+            syncDisplayPreview();
+        });
+    }
+    syncDisplayPreview();
 }
 
 // Configurer les contrôles de l'écran
@@ -3388,6 +3540,61 @@ async function sendDataToESP32(data) {
 }
 
 // Mettre à jour les informations de l'écran
+function normalizeDisplayPreviewAccent(hex) {
+    if (!hex || typeof hex !== 'string') return '#d4af37';
+    let h = hex.trim();
+    if (!h.startsWith('#')) h = '#' + h;
+    if (/^#[0-9A-Fa-f]{6}$/.test(h)) return h.toLowerCase();
+    return '#d4af37';
+}
+
+function syncDisplayPreview() {
+    const cd = config.display?.customData || {};
+    const accent = normalizeDisplayPreviewAccent(cd.previewAccent);
+    if (cd.previewAccent !== accent) {
+        cd.previewAccent = accent;
+    }
+    const mock = document.getElementById('display-content-mock');
+    if (mock) {
+        mock.style.setProperty('--display-accent', accent);
+    }
+    const accentIn = document.getElementById('display-preview-accent');
+    if (accentIn) {
+        const cur = accentIn.value.toLowerCase();
+        if (cur !== accent) accentIn.value = accent;
+    }
+
+    const rowMap = { mode: 'showMode', keys: 'showKeys', backlight: 'showBacklight', custom1: 'showCustom1', custom2: 'showCustom2' };
+    document.querySelectorAll('.display-item[data-preview-row]').forEach((el) => {
+        const r = el.getAttribute('data-preview-row');
+        const ck = rowMap[r];
+        const show = ck ? cd[ck] !== false : true;
+        el.classList.toggle('display-preview-row-hidden', !show);
+    });
+
+    const profEl = document.getElementById('display-profile');
+    const batEl = document.getElementById('display-battery');
+    const header = document.getElementById('display-preview-header');
+    if (profEl) profEl.classList.toggle('display-preview-row-hidden', cd.showProfile === false);
+    if (batEl) batEl.classList.toggle('display-preview-row-hidden', cd.showBattery === false);
+    if (header) header.classList.toggle('display-header--empty', cd.showProfile === false && cd.showBattery === false);
+
+    const p1 = document.getElementById('display-custom-preview-1');
+    const p2 = document.getElementById('display-custom-preview-2');
+    const t1 = (cd.customLine1 || '').trim();
+    const t2 = (cd.customLine2 || '').trim();
+    if (p1) p1.textContent = t1 || '—';
+    if (p2) p2.textContent = t2 || '—';
+
+    const dm = document.getElementById('display-mode');
+    if (dm) {
+        dm.classList.remove('display-out-usb', 'display-out-bluetooth');
+        const om = (config.outputMode || 'usb').toLowerCase();
+        if (om === 'bluetooth') dm.classList.add('display-out-bluetooth');
+        else dm.classList.add('display-out-usb');
+    }
+}
+
 function updateDisplayInfo() {
     const keysCount = Object.keys(getCurrentKeys()).filter(id => id !== '0-0').length;
     const totalKeys = 16;
@@ -3403,9 +3610,10 @@ function updateDisplayInfo() {
     const db = document.getElementById('display-backlight');
     if (db) db.textContent = config.backlight.enabled ? 'ON' : 'OFF';
     const dp = document.getElementById('display-profile');
-    if (dp) dp.textContent = config.activeProfile || 'Profil 1';
+    if (dp) dp.textContent = config.activeProfile || 'DEMO';
     const sd = document.getElementById('screen-display-profile');
-    if (sd) sd.textContent = config.activeProfile || 'Profil';
+    if (sd) sd.textContent = config.activeProfile || 'DEMO';
+    syncDisplayPreview();
 }
 
 // Démarrer les mises à jour de statut (appelé à l'init; l'interval ne fait rien si non connecté)
@@ -3433,7 +3641,12 @@ function startStatusUpdates() {
 function populateProfileSelect() {
     const sel = document.getElementById('profile-select');
     if (!sel) return;
-    const names = Object.keys(config.profiles || {}).sort();
+    // Ordre voulu: DEMO, USER1, puis les autres profils éventuels (custom) en ordre alpha.
+    const FIXED_ORDER = ['DEMO', 'USER1'];
+    const all = Object.keys(config.profiles || {});
+    const fixed = FIXED_ORDER.filter(n => all.includes(n));
+    const others = all.filter(n => !FIXED_ORDER.includes(n)).sort();
+    const names = [...fixed, ...others];
     sel.innerHTML = '';
     names.forEach(name => {
         const opt = document.createElement('option');
@@ -3443,7 +3656,11 @@ function populateProfileSelect() {
         sel.appendChild(opt);
     });
     const delBtn = document.getElementById('profile-delete');
-    if (delBtn) delBtn.disabled = names.length <= 1;
+    // On verrouille la suppression de DEMO et USER1 pour rester cohérent avec le firmware (2 profils fixes).
+    if (delBtn) {
+        const cur = config.activeProfile;
+        delBtn.disabled = (names.length <= 1) || cur === 'DEMO' || cur === 'USER1';
+    }
     if (typeof lucide !== 'undefined') {
         lucide.createIcons();
     }

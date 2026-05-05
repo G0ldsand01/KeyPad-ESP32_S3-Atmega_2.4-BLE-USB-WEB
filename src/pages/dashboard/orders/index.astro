@@ -93,6 +93,21 @@ const isAdmin = session.user.role === 'admin';
                           })
                         : ''}
                     </p>
+                    {(order.stripePaymentIntentId || order.stripeCheckoutSessionId) && (
+                      <p class="dashboard-note" style="margin: 0.5rem 0 0;">
+                        {order.stripePaymentIntentId && (
+                          <>
+                            Paiement Stripe: <code>{order.stripePaymentIntentId}</code>
+                          </>
+                        )}
+                        {order.stripePaymentIntentId && order.stripeCheckoutSessionId ? ' · ' : ''}
+                        {order.stripeCheckoutSessionId && (
+                          <>
+                            Session: <code>{order.stripeCheckoutSessionId}</code>
+                          </>
+                        )}
+                      </p>
+                    )}
                   </div>
                   <div class="dash-order-card__totals">
                     <span class={`dash-status dash-status--${order.status}`}>{statusLabel(order.status)}</span>

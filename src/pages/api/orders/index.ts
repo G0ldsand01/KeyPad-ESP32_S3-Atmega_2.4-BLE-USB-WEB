@@ -1,6 +1,8 @@
 import type { APIRoute } from 'astro';
 import { randomUUID } from 'node:crypto';
 import { getSession } from 'auth-astro/server';
+import { db } from '../../../db';
+import { orders } from '../../../db/schema';
 import { normalizeCartPayload, taxesFromSubtotalCents } from '../../../lib/orders';
 
 export const prerender = false;
@@ -47,8 +49,32 @@ export const POST: APIRoute = async ({ request }) => {
 
   const id = randomUUID();
 
-  // Mode sans DB (déploiement Vercel sans DATABASE_URL):
-  // on confirme la commande sans persistance.
+  const dbUrl = process.env.DATABASE_URL?.trim();
+  const dbEnabled = Boolean(dbUrl && /^postgres(ql)?:\/\//i.test(dbUrl));
+
+  if (dbEnabled) {
+    // Ne jamais bloquer le checkout si la DB est lente / indisponible.
+    const write = db.insert(orders).values({
+      id,
+      userId: session.user.id,
+      reference,
+      status: 'confirmed',
+      cartJson: JSON.stringify(normalized.items),
+      shippingJson,
+      subtotalCents: normalized.subtotalCents,
+      tpsCents,
+      tvqCents,
+      totalCents,
+    });
+
+    const timeoutMs = 2500;
+    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs));
+    try {
+      await Promise.race([write, timeout]);
+    } catch {
+      // On ignore l'erreur ici: le paiement peut continuer et le webhook/ops pourront réconcilier.
+    }
+  }
 
   return new Response(
     JSON.stringify({
@@ -60,10 +86,11 @@ export const POST: APIRoute = async ({ request }) => {
       tvqCents,
       totalCents,
       shippingJson,
+      dbEnabled,
     }),
     {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
     }
   );
 };

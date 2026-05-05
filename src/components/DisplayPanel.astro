@@ -34,6 +34,13 @@
       <label><input type="checkbox" id="display-show-custom1"> Ligne perso 1</label>
       <label><input type="checkbox" id="display-show-custom2"> Ligne perso 2</label>
     </div>
+    <div class="form-group display-preview-theme-row">
+      <label for="display-preview-accent">Couleur d'accent (aperçu Web)</label>
+      <div class="display-preview-accent-wrap">
+        <input type="color" id="display-preview-accent" class="display-preview-accent-input" value="#d4af37" aria-label="Couleur d'accent de l'aperçu" />
+        <span class="form-hint">Lignes mise en évidence et en-tête. L’ATmega en RV565 reste comme dans le firmware.</span>
+      </div>
+    </div>
     <div class="form-group">
       <label for="display-custom-line1">Ligne perso 1:</label>
       <input type="text" id="display-custom-line1" class="form-control" placeholder="Texte libre" maxlength="21">
@@ -43,27 +50,39 @@
       <input type="text" id="display-custom-line2" class="form-control" placeholder="Texte libre" maxlength="21">
     </div>
   </div>
-  <div class="display-preview">
-    <div class="display-content">
-      <div class="display-header">
-        <span id="display-profile">Profil 1</span>
-        <span id="display-battery" class="battery-indicator">
-          <i data-lucide="battery-full" class="battery-icon"></i>
-          <span>100%</span>
-        </span>
-      </div>
-      <div class="display-body">
-        <div class="display-item">
-          <span class="display-label">Mode:</span>
-          <span id="display-mode">USB</span>
+
+  <p class="form-hint display-preview-hint">Aperçu — grille alignée (labels à droite de la colonne fixe)</p>
+  <div class="display-preview display-preview-centered">
+    <div class="display-bezel">
+      <div class="display-content" id="display-content-mock">
+        <div class="display-header" id="display-preview-header">
+          <span id="display-profile" class="display-header-profile">USER1</span>
+          <span id="display-battery" class="battery-indicator display-header-battery">
+            <i data-lucide="battery-full" class="battery-icon"></i>
+            <span>100%</span>
+          </span>
         </div>
-        <div class="display-item">
-          <span class="display-label">Touches configurées:</span>
-          <span id="display-keys-count">0/16</span>
-        </div>
-        <div class="display-item">
-          <span class="display-label">Rétro-éclairage:</span>
-          <span id="display-backlight">ON</span>
+        <div class="display-body">
+          <div class="display-item display-row-mode" data-preview-row="mode">
+            <span class="display-label">MODE</span>
+            <span id="display-mode" class="display-value display-value-em">USB</span>
+          </div>
+          <div class="display-item display-row-keys" data-preview-row="keys">
+            <span class="display-label">TOUCHES</span>
+            <span id="display-keys-count" class="display-value">0/16</span>
+          </div>
+          <div class="display-item display-row-backlight" data-preview-row="backlight">
+            <span class="display-label">LED</span>
+            <span id="display-backlight" class="display-value">ON</span>
+          </div>
+          <div class="display-item display-row-custom1" data-preview-row="custom1">
+            <span class="display-label">L.1</span>
+            <span id="display-custom-preview-1" class="display-value display-value-muted"></span>
+          </div>
+          <div class="display-item display-row-custom2" data-preview-row="custom2">
+            <span class="display-label">L.2</span>
+            <span id="display-custom-preview-2" class="display-value display-value-muted"></span>
+          </div>
         </div>
       </div>
     </div>

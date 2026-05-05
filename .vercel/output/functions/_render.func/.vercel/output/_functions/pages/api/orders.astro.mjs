@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { g as getSession } from '../../chunks/server_CatkvZha.mjs';
+import { g as getSession } from '../../chunks/server_BNGpEuMe.mjs';
+import { d as db, o as orders } from '../../chunks/index_Dzm_i-4A.mjs';
 import { n as normalizeCartPayload, t as taxesFromSubtotalCents } from '../../chunks/orders_C_9vI6qd.mjs';
 export { renderers } from '../../renderers.mjs';
 
@@ -35,6 +36,28 @@ const POST = async ({ request }) => {
   const shipping = body.shipping;
   const shippingJson = shipping && typeof shipping === "object" ? JSON.stringify(shipping) : null;
   const id = randomUUID();
+  const dbUrl = process.env.DATABASE_URL?.trim();
+  const dbEnabled = Boolean(dbUrl && /^postgres(ql)?:\/\//i.test(dbUrl));
+  if (dbEnabled) {
+    const write = db.insert(orders).values({
+      id,
+      userId: session.user.id,
+      reference,
+      status: "confirmed",
+      cartJson: JSON.stringify(normalized.items),
+      shippingJson,
+      subtotalCents: normalized.subtotalCents,
+      tpsCents,
+      tvqCents,
+      totalCents
+    });
+    const timeoutMs = 2500;
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs));
+    try {
+      await Promise.race([write, timeout]);
+    } catch {
+    }
+  }
   return new Response(
     JSON.stringify({
       ok: true,
@@ -44,7 +67,8 @@ const POST = async ({ request }) => {
       tpsCents,
       tvqCents,
       totalCents,
-      shippingJson
+      shippingJson,
+      dbEnabled
     }),
     {
       status: 200,

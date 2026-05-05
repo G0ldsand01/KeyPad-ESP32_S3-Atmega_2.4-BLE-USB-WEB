@@ -640,7 +640,7 @@ header h1:hover .header-icon {
     left: 0;
     right: 0;
     bottom: 0;
-    background: linear-gradient(135deg, rgba(0, 255, 0, 0.1) 0%, rgba(0, 255, 0, 0.05) 100%);
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0) 100%);
     pointer-events: none;
 }
 
@@ -654,7 +654,7 @@ header h1:hover .header-icon {
     height: 100%;
     font-size: 0.9rem;
     font-weight: 600;
-    color: #00ff88;
+    color: #a0a0a0;
     text-align: center;
     padding: 0 8px;
 }
@@ -827,9 +827,14 @@ header h1:hover .header-icon {
 }
 
 .key-button.configured {
-    border-color: var(--success-color);
-    box-shadow: 0 0 0 1px var(--success-color);
+    border-color: rgba(255, 255, 255, 0.22);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
     animation: pulse 2s ease-in-out infinite;
+}
+
+[data-theme="light"] .key-button.configured {
+    border-color: rgba(0, 0, 0, 0.22);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
 }
 
 .key-button.selected {
@@ -1448,6 +1453,7 @@ header h1:hover .header-icon {
     box-shadow: 0 18px 45px rgba(0, 0, 0, 0.65);
     margin-bottom: 24px;
     height: 110%;
+    overflow: visible;
     animation: fadeIn 0.6s ease-out 0.6s both;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     backdrop-filter: blur(40px);
@@ -2252,59 +2258,153 @@ textarea:invalid:not(:placeholder-shown):focus {
     margin-bottom: 0;
 }
 
-/* Aperçu de l'écran */
-.display-preview {
-    background: #000000;
-    border: 3px solid var(--border-color);
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 32px;
-    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
+.display-preview-theme-row .display-preview-accent-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+.display-preview-accent-input {
+    width: 52px;
+    height: 36px;
+    padding: 2px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--surface-color);
+}
+
+.display-preview-hint {
+    margin-top: 4px;
+    margin-bottom: 8px;
+}
+
+/* Aperçu de l'écran — centré, grille alignée, couleur d'accent */
+.display-preview.display-preview-centered {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 8px 0 24px;
+    margin-bottom: 8px;
+}
+
+.display-bezel {
+    width: 100%;
+    max-width: 380px;
+    padding: 14px 16px 16px;
+    background: linear-gradient(145deg, #2a2a2e 0%, #121214 100%);
+    border: 2px solid var(--border-color);
+    border-radius: 16px;
+    box-shadow:
+        0 8px 28px rgba(0, 0, 0, 0.45),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .display-content {
-    background: #1a1a1a;
-    color: #ffffff;
-    border-radius: 8px;
-    padding: 12px;
-    font-family: 'Courier New', monospace;
-    font-size: 0.75rem;
-    min-height: 120px;
+    --display-accent: #d4af37;
+    background: #0c0c0f;
+    color: #f4f4f5;
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    font-size: 0.8125rem;
+    line-height: 1.35;
+    min-height: 132px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-sizing: border-box;
+}
+
+[data-theme="light"] .display-bezel {
+    background: linear-gradient(145deg, #e4e4e7 0%, #d4d4d8 100%);
+    border-color: var(--border-color);
 }
 
 [data-theme="light"] .display-content {
-    background: #1a1a1a;
-    color: #ffffff;
+    background: #0c0c0f;
+    color: #f4f4f5;
+}
+
+.display-preview-row-hidden {
+    display: none !important;
 }
 
 .display-header {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     align-items: center;
+    gap: 8px 12px;
     margin-bottom: 12px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    padding-bottom: 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--display-accent, #d4af37) 42%, transparent);
+}
+
+.display-header .display-header-profile {
+    justify-self: start;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--display-accent, #d4af37);
+    font-size: 0.8125rem;
+}
+
+.display-header .display-header-battery {
+    justify-self: end;
+    color: color-mix(in srgb, var(--display-accent, #d4af37) 80%, #fff);
+    font-size: 0.75rem;
+}
+
+.display-header.display-header--empty {
+    display: none;
 }
 
 .display-body {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+    display: grid;
+    grid-template-columns: minmax(6.5rem, 40%) minmax(0, 1fr);
+    column-gap: 0.75rem;
+    row-gap: 0.42rem;
+    align-items: baseline;
 }
 
-.display-item {
-    display: flex;
-    justify-content: space-between;
-    font-size: 0.7rem;
+.display-item:not(.display-preview-row-hidden) {
+    display: contents;
+}
+
+.display-item.display-preview-row-hidden {
+    display: none;
 }
 
 .display-label {
-    color: rgba(255, 255, 255, 0.7);
+    text-align: right;
+    padding-right: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: color-mix(in srgb, var(--display-accent, #d4af37) 65%, rgba(255, 255, 255, 0.75));
+    white-space: nowrap;
 }
 
 .display-value {
-    color: #ffffff;
+    text-align: left;
     font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    word-break: break-word;
+    color: #f4f4f5;
+}
+
+.display-value-em.display-out-usb {
+    color: #4ade80;
+}
+
+.display-value-em.display-out-bluetooth {
+    color: #60a5fa;
+}
+
+.display-value-muted {
+    color: color-mix(in srgb, var(--display-accent, #d4af37) 35%, #a1a1aa);
+    font-weight: 500;
 }
 
 /* Navigation écran */
@@ -2657,6 +2757,7 @@ textarea:invalid:not(:placeholder-shown):focus {
     border: 1px solid var(--border-color);
     border-radius: 10px;
     padding: 20px;
+    overflow: visible;
 }
 
 [data-theme="light"] .backlight-section {
@@ -2772,6 +2873,7 @@ textarea:invalid:not(:placeholder-shown):focus {
     border: 1px solid var(--border-color);
     background: var(--bg-elevated, var(--surface-color));
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+    pointer-events: auto;
 }
 
 .backlight-color-popover[hidden] {

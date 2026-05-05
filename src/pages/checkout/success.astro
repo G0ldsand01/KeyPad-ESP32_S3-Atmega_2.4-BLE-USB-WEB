@@ -1,0 +1,80 @@
+---
+import Layout from '../../layouts/Layout.astro';
+
+const sessionId = Astro.url.searchParams.get('session_id');
+const reference = Astro.url.searchParams.get('ref');
+---
+
+<Layout site title="Paiement réussi | FlexPad">
+  <div class="checkout-page">
+    <nav class="breadcrumb">
+      <a href="/">Accueil</a>
+      <span class="separator">/</span>
+      <a href="/checkout/">Commander</a>
+      <span class="separator">/</span>
+      <span>Paiement confirmé</span>
+    </nav>
+
+    <div class="checkout-container checkout-container--wide">
+      <section class="checkout-step reveal visible">
+        <div class="confirmation-success">
+          <div class="success-icon" aria-hidden="true">✓</div>
+          <h2>Paiement confirmé</h2>
+          <p>
+            Merci! Votre paiement a été accepté et la commande est en cours de traitement.
+          </p>
+          <p class="contact-aside-note" style="margin: 0.75rem auto 0; max-width: 48rem;">
+            Sur un déploiement complet, la commande est automatiquement marquée comme payée via le webhook Stripe.
+          </p>
+
+          <div class="dashboard-card" style="max-width: 44rem; margin-inline: auto; text-align: left;">
+            <h3 class="dashboard-card__title" style="margin-bottom: 0.75rem;">Récapitulatif</h3>
+            <ul class="dashboard-meta" style="margin-bottom: 0;">
+              <li>
+                <span>Référence</span>
+                <strong style="color: var(--flexpad-text); font-weight: 800; letter-spacing: 0.03em;">
+                  <span id="flexpad-tx-ref">{reference ?? '—'}</span>
+                </strong>
+              </li>
+              <li>
+                <span>Statut</span>
+                <strong style="color: var(--flexpad-text); font-weight: 700;">Payé</strong>
+              </li>
+              <li>
+                <span>Session</span>
+                <code id="flexpad-stripe-session">{sessionId ?? '—'}</code>
+              </li>
+            </ul>
+            {!sessionId && (
+              <p class="dashboard-note" style="margin-top: 0.75rem;">
+                Astuce: si vous rafraîchissez cette page, l’ID de session peut disparaître de l’URL.
+              </p>
+            )}
+          </div>
+
+          <div class="confirmation-success-actions" style="margin-top: 1.25rem;">
+            <a href="/dashboard/orders" class="btn-primary">Voir mes commandes</a>
+            <a href="/product/" class="btn-secondary">Retour au produit</a>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    try {
+      const url = new URL(window.location.href);
+      const ref = url.searchParams.get('ref') || sessionStorage.getItem('flexpad_last_reference') || '';
+      if (ref) {
+        const el = document.getElementById('flexpad-tx-ref');
+        if (el) el.textContent = ref;
+      }
+      const sid = url.searchParams.get('session_id') || '';
+      if (sid) {
+        const el = document.getElementById('flexpad-stripe-session');
+        if (el) el.textContent = sid;
+      }
+    } catch {}
+  </script>
+</Layout>
+
