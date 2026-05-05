@@ -15,17 +15,31 @@ const unitPrice = 149.99;
 
 let checkoutAbort = null;
 
-/** Parse une réponse fetch ; évite SyntaxError si Vercel renvoie du HTML (erreur 500). */
+/**
+ * Parse une réponse API : lit le corps en texte puis JSON.parse.
+ * Vercel peut renvoyer du HTML d’erreur avec un Content-Type trompeur — évite SyntaxError sur .json().
+ */
 async function responseJsonOrThrow(res, label) {
-  const ct = (res.headers.get('content-type') || '').toLowerCase();
-  if (ct.includes('application/json')) {
-    return res.json();
-  }
   const text = await res.text();
-  const hint = text.replace(/\s+/g, ' ').trim().slice(0, 120);
-  throw new Error(
-    hint || `${label}: HTTP ${res.status} (réponse non-JSON — vérifie les variables Vercel : AUTH_SECRET, STRIPE_SECRET_KEY, DATABASE_URL).`,
-  );
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error(
+      `${label}: réponse vide (HTTP ${res.status}). Vérifie les logs de la fonction sur Vercel et les variables AUTH_SECRET, STRIPE_SECRET_KEY.`,
+    );
+  }
+  if (trimmed[0] === '<' || trimmed.startsWith('<!')) {
+    const hint = trimmed.replace(/\s+/g, ' ').slice(0, 120);
+    throw new Error(
+      `${label}: page HTML d’erreur (${res.status}) — ${hint}… Configure AUTH_SECRET et AUTH_TRUST_HOST sur Vercel, puis redeploie.`,
+    );
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    throw new Error(
+      `${label}: corps non-JSON (HTTP ${res.status}) — ${trimmed.replace(/\s+/g, ' ').slice(0, 140)}…`,
+    );
+  }
 }
 
 function getCart() {
@@ -239,7 +253,7 @@ function initCheckoutPage() {
       let createdOrderId = null;
       try {
         const sessRes = await fetch('/api/auth/session', { credentials: 'same-origin' });
-        const sess = await sessRes.json();
+        const sess = await responseJsonOrThrow(sessRes, 'Session');
         if (sess && sess.user) {
           const subtotal = unitPrice * qty;
           const tps = subtotal * 0.05;
@@ -325,7 +339,12 @@ function initCheckoutPage() {
         return;
       } catch (err) {
         console.warn('[checkout] stripe', err);
-        alert("Paiement indisponible pour l'instant. Réessaie dans quelques secondes.");
+        const detail = err instanceof Error ? err.message : '';
+        alert(
+          detail
+            ? `Paiement : ${detail}`
+            : "Paiement indisponible pour l'instant. Réessaie dans quelques secondes.",
+        );
         return;
       }
 
