@@ -18,7 +18,7 @@ function generateOrderNumber(): string {
   return `FXP-${y}${m}${day}-${rand}`;
 }
 
-export const POST: APIRoute = async ({ request, url }) => {
+async function runCheckoutSessionPost({ request, url }: { request: Request; url: URL }): Promise<Response> {
   // Checkout invité autorisé: session optionnelle.
   const session = await getSession(request).catch(() => null);
   const userId = session?.user?.id ?? '';
@@ -120,18 +120,34 @@ export const POST: APIRoute = async ({ request, url }) => {
   const dbUrl = process.env.DATABASE_URL?.trim();
   const dbEnabled = Boolean(dbUrl && /^postgres(ql)?:\/\//i.test(dbUrl));
   if (dbEnabled && orderId) {
-    await db
-      .update(orders)
-      .set({
-        stripeCheckoutSessionId: created.id,
-        stripePaymentIntentId: typeof created.payment_intent === 'string' ? created.payment_intent : null,
-      })
-      .where(eq(orders.id, orderId));
+    try {
+      await db
+        .update(orders)
+        .set({
+          stripeCheckoutSessionId: created.id,
+          stripePaymentIntentId: typeof created.payment_intent === 'string' ? created.payment_intent : null,
+        })
+        .where(eq(orders.id, orderId));
+    } catch {
+      /* Ne pas renvoyer une page HTML 500 : le paiement Stripe est déjà créé ; sync webhook possible. */
+    }
   }
 
   return new Response(JSON.stringify({ ok: true, id: created.id, url: created.url, reference }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   });
-};
+}
 
+export const POST: APIRoute = async (ctx) => {
+  try {
+    return await runCheckoutSessionPost(ctx);
+  } catch (err) {
+    return new Response(
+      JSON.stringify({
+        error: (err as Error).message ?? 'Erreur serveur inattendue (voir logs Vercel / variables STRIPE_SECRET_KEY).',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+};

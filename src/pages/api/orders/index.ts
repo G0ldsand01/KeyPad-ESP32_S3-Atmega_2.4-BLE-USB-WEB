@@ -8,7 +8,15 @@ import { normalizeCartPayload, taxesFromSubtotalCents } from '../../../lib/order
 export const prerender = false;
 
 export const POST: APIRoute = async ({ request }) => {
-  const session = await getSession(request);
+  let session;
+  try {
+    session = await getSession(request);
+  } catch {
+    return new Response(JSON.stringify({ error: 'Session indisponible (AUTH_SECRET / Auth ou serveur).' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   if (!session?.user?.id) {
     return new Response(JSON.stringify({ error: 'Non authentifié' }), {
       status: 401,

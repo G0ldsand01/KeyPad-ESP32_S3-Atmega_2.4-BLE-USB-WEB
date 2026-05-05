@@ -15,6 +15,19 @@ const unitPrice = 149.99;
 
 let checkoutAbort = null;
 
+/** Parse une réponse fetch ; évite SyntaxError si Vercel renvoie du HTML (erreur 500). */
+async function responseJsonOrThrow(res, label) {
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (ct.includes('application/json')) {
+    return res.json();
+  }
+  const text = await res.text();
+  const hint = text.replace(/\s+/g, ' ').trim().slice(0, 120);
+  throw new Error(
+    hint || `${label}: HTTP ${res.status} (réponse non-JSON — vérifie les variables Vercel : AUTH_SECRET, STRIPE_SECRET_KEY, DATABASE_URL).`,
+  );
+}
+
 function getCart() {
   try {
     const data = localStorage.getItem(CART_KEY);
@@ -256,7 +269,7 @@ function initCheckoutPage() {
             }),
           });
           if (saveRes.ok) {
-            const j = await saveRes.json();
+            const j = await responseJsonOrThrow(saveRes, 'Commande');
             if (j.reference) displayRef = j.reference;
             if (j.orderId) createdOrderId = j.orderId;
           }
@@ -297,7 +310,7 @@ function initCheckoutPage() {
             cart: cartPayload,
           }),
         });
-        const stripeJson = await stripeRes.json();
+        const stripeJson = await responseJsonOrThrow(stripeRes, 'Stripe');
         if (stripeRes.ok && stripeJson && stripeJson.url) {
           try {
             if (stripeJson.reference) sessionStorage.setItem('flexpad_last_reference', String(stripeJson.reference));
