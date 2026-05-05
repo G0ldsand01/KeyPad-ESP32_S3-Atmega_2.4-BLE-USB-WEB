@@ -1,6 +1,20 @@
 ---
 ---
 
+<!-- Bannière globale : transfert OTA vers l’ESP32 (visible même en défilant) -->
+<div
+  id="ota-firmware-banner"
+  class="ota-firmware-banner"
+  hidden
+  role="status"
+  aria-live="assertive"
+>
+  <span class="ota-firmware-banner__pulse" aria-hidden="true"></span>
+  <span class="ota-firmware-banner__text"
+    >Mise à jour du firmware en cours — ne fermez pas l’onglet et gardez la connexion USB ou BLE.</span
+  >
+</div>
+
 <div class="settings-layout-full" id="settings-layout">
   <!-- Toggles (haut) -->
   <div class="settings-top-toggles">
@@ -144,7 +158,15 @@
         <i data-lucide="refresh-cw" class="btn-icon"></i>
         Vérifier les mises à jour
       </button>
-      <div id="ota-check-feedback" class="ota-check-feedback" style="display: none;"></div>
+      <button
+        type="button"
+        id="ota-reopen-github-dialog-btn"
+        class="btn btn-outline btn-sm ota-reopen-github-btn"
+        hidden
+      >
+        <i data-lucide="info" class="btn-icon"></i>
+        Voir le dernier résultat GitHub
+      </button>
     </div>
   </div>
 
@@ -178,3 +200,17 @@
     <div id="settings-feedback" class="feedback-message"></div>
   </div>
 </div>
+
+<dialog id="ota-github-result-dialog" class="ota-github-result-dialog" aria-labelledby="ota-github-result-title">
+  <div class="ota-github-result-dialog__chrome">
+    <div class="ota-github-result-dialog__header">
+      <h4 id="ota-github-result-title">Mises à jour GitHub</h4>
+      <button type="button" class="ota-github-result-dialog__close" id="ota-github-result-close" aria-label="Fermer">
+        ×
+      </button>
+    </div>
+    <div class="ota-github-result-dialog__body">
+      <div id="ota-check-feedback" class="ota-check-feedback"></div>
+    </div>
+  </div>
+</dialog>

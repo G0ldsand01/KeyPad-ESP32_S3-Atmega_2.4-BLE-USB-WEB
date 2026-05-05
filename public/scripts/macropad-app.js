@@ -2880,6 +2880,23 @@ function setupSettingsControls() {
             saveConfig();
         });
     }
+
+    const otaGithubDialog = document.getElementById('ota-github-result-dialog');
+    const otaGithubDialogClose = document.getElementById('ota-github-result-close');
+    const otaReopenGithubBtn = document.getElementById('ota-reopen-github-dialog-btn');
+    if (otaGithubDialogClose) {
+        otaGithubDialogClose.addEventListener('click', () => closeOtaGithubResultDialog());
+    }
+    if (otaGithubDialog) {
+        otaGithubDialog.addEventListener('click', (e) => {
+            if (e.target === otaGithubDialog) {
+                otaGithubDialog.close();
+            }
+        });
+    }
+    if (otaReopenGithubBtn) {
+        otaReopenGithubBtn.addEventListener('click', () => openOtaGithubResultDialog());
+    }
 }
 
 // Convertir ArrayBuffer/Uint8Array en base64 (pour binaire)
@@ -2913,12 +2930,180 @@ function getOtaGithubRepoFromUI() {
     return (otaGithubRepo?.value || config.settings?.githubFirmwareRepo || '').trim();
 }
 
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+/** Corps des notes de release GitHub : HTML échappé, sauts de ligne, longueur plafonnée. */
+function formatGithubReleaseBody(raw, maxLen = 8000) {
+    let t = String(raw || '').trim();
+    if (t.length > maxLen) t = t.slice(0, maxLen) + '\n…';
+    return escapeHtml(t).replace(/\n/g, '<br>');
+}
+
+function getOtaGithubResultDialog() {
+    return document.getElementById('ota-github-result-dialog');
+}
+
+/** Nettoyage des écouteurs de repositionnement du dialogue GitHub OTA */
+let otaGithubDialogPositionCleanup = null;
+
+function removeOtaGithubDialogPositionListeners() {
+    if (otaGithubDialogPositionCleanup) {
+        otaGithubDialogPositionCleanup();
+        otaGithubDialogPositionCleanup = null;
+    }
+}
+
+/**
+ * Popover compact (comme le panier) si peu de texte ; fenêtre centrée type alerte si mobile ou notes très longues.
+ */
+function syncOtaGithubDialogLayoutMode() {
+    const d = getOtaGithubResultDialog();
+    if (!d) return;
+    const feedbackEl = document.getElementById('ota-check-feedback');
+    const textLen = (feedbackEl?.textContent || '').length;
+    const modal =
+        typeof window !== 'undefined' && window.innerWidth < 540
+            ? true
+            : textLen > 1800;
+    d.classList.toggle('ota-github-result-dialog--modal', modal);
+    d.classList.toggle('ota-github-result-dialog--popover', !modal);
+}
+
+function finalizeOtaGithubDialogContent() {
+    syncOtaGithubDialogLayoutMode();
+    schedulePositionOtaGithubResultDialog();
+}
+
+/**
+ * Ancre le dialogue (mode popover) au-dessus du panneau OTA ; en mode modal le CSS centre la fenêtre.
+ */
+function positionOtaGithubResultDialog() {
+    const d = getOtaGithubResultDialog();
+    if (!d || !d.open) return;
+
+    if (d.classList.contains('ota-github-result-dialog--modal')) {
+        d.style.left = '';
+        d.style.top = '';
+        return;
+    }
+
+    const anchor = document.querySelector('.ota-panel');
+    if (!anchor) return;
+
+    const gap = 12;
+    const rect = anchor.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const w = d.offsetWidth;
+    const h = d.offsetHeight;
+
+    let left = rect.left + rect.width / 2 - w / 2;
+    let top = rect.top - h - gap;
+    const pad = 10;
+
+    left = Math.max(pad, Math.min(left, vw - w - pad));
+
+    if (top < pad) {
+        top = rect.bottom + gap;
+    }
+    if (top + h > vh - pad) {
+        top = Math.max(pad, Math.min(top, vh - h - pad));
+    }
+
+    d.style.left = `${Math.round(left)}px`;
+    d.style.top = `${Math.round(top)}px`;
+}
+
+function attachOtaGithubDialogPositionListeners() {
+    removeOtaGithubDialogPositionListeners();
+    const handler = () => {
+        syncOtaGithubDialogLayoutMode();
+        positionOtaGithubResultDialog();
+    };
+    window.addEventListener('resize', handler);
+    window.addEventListener('scroll', handler, true);
+    otaGithubDialogPositionCleanup = () => {
+        window.removeEventListener('resize', handler);
+        window.removeEventListener('scroll', handler, true);
+    };
+}
+
+function schedulePositionOtaGithubResultDialog() {
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            positionOtaGithubResultDialog();
+        });
+    });
+}
+
+function openOtaGithubResultDialog() {
+    const d = getOtaGithubResultDialog();
+    if (!d) return;
+    syncOtaGithubDialogLayoutMode();
+    if (typeof d.showModal === 'function' && !d.open) {
+        d.showModal();
+    }
+    schedulePositionOtaGithubResultDialog();
+    attachOtaGithubDialogPositionListeners();
+}
+
+function closeOtaGithubResultDialog() {
+    const d = getOtaGithubResultDialog();
+    removeOtaGithubDialogPositionListeners();
+    if (d && typeof d.close === 'function') {
+        d.close();
+    }
+    if (d) {
+        d.style.left = '';
+        d.style.top = '';
+        d.classList.remove('ota-github-result-dialog--modal', 'ota-github-result-dialog--popover');
+    }
+}
+
+function showOtaFirmwareBanner() {
+    const el = document.getElementById('ota-firmware-banner');
+    if (el) el.hidden = false;
+    document.body.classList.add('ota-firmware-banner-visible');
+}
+
+function hideOtaFirmwareBanner() {
+    const el = document.getElementById('ota-firmware-banner');
+    if (el) el.hidden = true;
+    document.body.classList.remove('ota-firmware-banner-visible');
+}
+
 async function fetchGithubReleaseBinArrayBuffer(browserDownloadUrl) {
     if (!browserDownloadUrl || !String(browserDownloadUrl).startsWith('https://')) {
         throw new Error('URL de téléchargement du firmware invalide.');
     }
-    const binRes = await fetch(browserDownloadUrl);
-    if (!binRes.ok) throw new Error(`Téléchargement du .bin : ${binRes.status}`);
+    // GitHub (releases/assets) ne renvoie pas de CORS pour lecture depuis un site tiers :
+    // fetch direct → TypeError: Failed to fetch. Passage par notre proxy même origine.
+    const proxyUrl = `${window.location.origin}/api/github-release-bin`;
+    const binRes = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: browserDownloadUrl }),
+    });
+    if (!binRes.ok) {
+        let detail = `HTTP ${binRes.status}`;
+        try {
+            const j = await binRes.json();
+            if (j && j.error) detail = j.error;
+        } catch (_) {
+            try {
+                detail = (await binRes.text()).slice(0, 200);
+            } catch (_) {
+                /* ignore */
+            }
+        }
+        throw new Error(`Téléchargement du firmware : ${detail}`);
+    }
     return await binRes.arrayBuffer();
 }
 
@@ -2933,6 +3118,8 @@ async function performOTAUpdateWithBuffer(arrayBuffer, filename) {
         // Taille brute par message ota_chunk (base64 dans du JSON). Doit rester <= OTA_DECODE_BUF_SIZE (firmware).
         const rawChunkSize = 2048;
         const totalChunks = Math.ceil(fileSize / rawChunkSize);
+
+        showOtaFirmwareBanner();
 
         if (otaProgress) otaProgress.style.display = 'block';
         if (otaProgressBar) {
@@ -3002,6 +3189,7 @@ async function performOTAUpdateWithBuffer(arrayBuffer, filename) {
         }
 
         setTimeout(() => {
+            hideOtaFirmwareBanner();
             if (otaProgress) otaProgress.style.display = 'none';
             if (otaUpdateBtn) otaUpdateBtn.disabled = false;
             const otaCheckBtn2 = document.getElementById('ota-check-updates-btn');
@@ -3013,6 +3201,7 @@ async function performOTAUpdateWithBuffer(arrayBuffer, filename) {
         }, 3000);
     } catch (error) {
         console.error('OTA Update Error:', error);
+        hideOtaFirmwareBanner();
         alert('Erreur lors de la mise à jour: ' + error.message);
         if (otaProgress) otaProgress.style.display = 'none';
         if (otaUpdateBtn) otaUpdateBtn.disabled = false;
@@ -3028,7 +3217,7 @@ async function performOTAUpdate(file) {
 }
 
 /**
- * Vérifie la dernière release GitHub et affiche le résultat dans #ota-check-feedback.
+ * Vérifie la dernière release GitHub et affiche le résultat dans le dialogue #ota-github-result-dialog.
  * @param {{ repo?: string, autoInstallOta?: boolean }} options
  */
 async function runGithubFirmwareCheck(options = {}) {
@@ -3036,14 +3225,20 @@ async function runGithubFirmwareCheck(options = {}) {
     const feedbackEl = document.getElementById('ota-check-feedback');
     if (!feedbackEl) return;
 
+    const reopenBtn = document.getElementById('ota-reopen-github-dialog-btn');
+    if (reopenBtn) reopenBtn.hidden = true;
+
     const repo = (repoOpt ?? getOtaGithubRepoFromUI()).trim();
-    feedbackEl.style.display = 'block';
     feedbackEl.className = 'ota-check-feedback';
     feedbackEl.innerHTML = '<span class="ota-check-loading">Vérification des mises à jour…</span>';
+    openOtaGithubResultDialog();
 
     if (!repo) {
         feedbackEl.className = 'ota-check-feedback ota-check-error';
         feedbackEl.innerHTML = 'Indiquez un dépôt GitHub (ex: owner/repo) pour vérifier les mises à jour.';
+        if (reopenBtn) reopenBtn.hidden = false;
+        if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+        finalizeOtaGithubDialogContent();
         return;
     }
 
@@ -3051,6 +3246,9 @@ async function runGithubFirmwareCheck(options = {}) {
     if (parts.length !== 2) {
         feedbackEl.className = 'ota-check-feedback ota-check-error';
         feedbackEl.innerHTML = 'Format de dépôt invalide. Utilisez owner/repo.';
+        if (reopenBtn) reopenBtn.hidden = false;
+        if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+        finalizeOtaGithubDialogContent();
         return;
     }
     const apiPath = `${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`;
@@ -3094,11 +3292,12 @@ async function runGithubFirmwareCheck(options = {}) {
 
         if (isNewer) {
             feedbackEl.className = 'ota-check-feedback ota-check-success';
+            const releaseNotesHtml = formatGithubReleaseBody(data.body || '');
             feedbackEl.innerHTML = `
-                <strong>Mise à jour disponible : ${data.tag_name || tag}</strong>
-                <p class="ota-check-desc">Firmware actuel (appareil) : <strong>${current}</strong></p>
-                <p class="ota-check-desc">${(data.body || '').slice(0, 200)}${(data.body || '').length > 200 ? '…' : ''}</p>
-                <a href="${downloadUrl}" target="_blank" rel="noopener" class="ota-check-link">Télécharger le firmware</a>
+                <strong>Mise à jour disponible : ${escapeHtml(data.tag_name || tag)}</strong>
+                <p class="ota-check-desc">Firmware actuel (appareil) : <strong>${escapeHtml(current)}</strong></p>
+                <div class="ota-check-desc ota-check-release-notes">${releaseNotesHtml}</div>
+                <a href="${escapeHtml(downloadUrl)}" target="_blank" rel="noopener" class="ota-check-link">Télécharger le firmware</a>
                 ${binAsset ? '<button type="button" class="btn btn-primary btn-block" id="ota-install-from-github-btn" style="margin-top:0.75rem;">Installer cette version via OTA</button>' : ''}
             `;
 
@@ -3114,6 +3313,7 @@ async function runGithubFirmwareCheck(options = {}) {
                     if (!confirm(`Installer ${data.tag_name || tag} (${fname}) par OTA ? Ne pas déconnecter pendant le transfert.`)) return;
                     try {
                         installBtn.disabled = true;
+                        closeOtaGithubResultDialog();
                         const buf = await fetchGithubReleaseBinArrayBuffer(dl);
                         await performOTAUpdateWithBuffer(buf, fname);
                     } catch (err) {
@@ -3127,6 +3327,7 @@ async function runGithubFirmwareCheck(options = {}) {
             if (autoInstallOta && binAsset && config.connected) {
                 const go = confirm(`Une mise à jour ${data.tag_name || tag} est disponible (actuel : ${current}). Lancer l'installation OTA depuis GitHub maintenant ?`);
                 if (go) {
+                    closeOtaGithubResultDialog();
                     const buf = await fetchGithubReleaseBinArrayBuffer(binAsset.browser_download_url);
                     await performOTAUpdateWithBuffer(buf, binAsset.name || 'firmware.bin');
                 }
@@ -3135,11 +3336,17 @@ async function runGithubFirmwareCheck(options = {}) {
             }
         } else {
             feedbackEl.className = 'ota-check-feedback ota-check-info';
-            feedbackEl.innerHTML = `Vous êtes à jour (appareil : <strong>${current}</strong>). Dernière release : ${data.tag_name || tag}`;
+            feedbackEl.innerHTML = `Vous êtes à jour (appareil : <strong>${escapeHtml(current)}</strong>). Dernière release : ${escapeHtml(String(data.tag_name || tag))}`;
         }
+        if (reopenBtn) reopenBtn.hidden = false;
+        if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+        finalizeOtaGithubDialogContent();
     } catch (err) {
         feedbackEl.className = 'ota-check-feedback ota-check-error';
-        feedbackEl.innerHTML = 'Erreur : ' + (err.message || 'impossible de vérifier');
+        feedbackEl.innerHTML = 'Erreur : ' + escapeHtml(err.message || 'impossible de vérifier');
+        if (reopenBtn) reopenBtn.hidden = false;
+        if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+        finalizeOtaGithubDialogContent();
     }
 }
 
