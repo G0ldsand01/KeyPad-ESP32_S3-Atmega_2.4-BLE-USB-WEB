@@ -3056,12 +3056,33 @@ async function runGithubFirmwareCheck(options = {}) {
     const apiPath = `${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`;
 
     try {
+        const repoRes = await fetch(`https://api.github.com/repos/${apiPath}`, {
+            headers: { Accept: 'application/vnd.github.v3+json' }
+        });
+        if (!repoRes.ok) {
+            if (repoRes.status === 404) {
+                throw new Error(
+                    'Dépôt introuvable ou inaccessible (nom « owner/repo » incorrect, dépôt privé sans jeton, ou URL mal copiée). Exemple : MathieuG8/KeyPad-ESP32_S3-Atmega_2.4-BLE-USB-WEB'
+                );
+            }
+            if (repoRes.status === 403) {
+                throw new Error(
+                    'GitHub a refusé l’accès (limite de requêtes non authentifiées ou dépôt privé). Réessayez dans une minute ou utilisez un dépôt public.'
+                );
+            }
+            throw new Error(`Erreur API dépôt : ${repoRes.status}`);
+        }
+
         const res = await fetch(`https://api.github.com/repos/${apiPath}/releases/latest`, {
             headers: { Accept: 'application/vnd.github.v3+json' }
         });
         if (!res.ok) {
-            if (res.status === 404) throw new Error('Dépôt ou release introuvable.');
-            throw new Error(`Erreur API: ${res.status}`);
+            if (res.status === 404) {
+                throw new Error(
+                    'Pas de « dernière release » sur ce dépôt. Sur github.com → Releases → Create a new release, publiez une version (pas brouillon) et joignez un .bin. Note : les seules pre-releases ne comptent pas comme « latest ».'
+                );
+            }
+            throw new Error(`Erreur API releases : ${res.status}`);
         }
         const data = await res.json();
         const tagRaw = data.tag_name || '';

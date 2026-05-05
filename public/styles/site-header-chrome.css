@@ -652,3 +652,39 @@ html.cart-overlay-open {
 [data-theme='light'] .cart-item-details h3 {
   color: var(--flexpad-text);
 }
+
+/* Même apparence « Retirer » que la page checkout (main.css .btn-danger), sans casser .btn-danger global */
+.cart-widget .btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem 2.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: inherit;
+  color: #fff;
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 50px;
+  cursor: pointer;
+  text-decoration: none;
+  box-shadow: 0 8px 26px rgba(239, 68, 68, 0.22);
+}
+
+.cart-widget .btn-danger:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(239, 68, 68, 0.3);
+}
+
+.cart-widget .btn-danger.btn-sm {
+  padding: 0.55rem 0.85rem;
+  font-size: 0.85rem;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.cart-widget .btn-danger svg {
+  width: 16px;
+  height: 16px;
+}

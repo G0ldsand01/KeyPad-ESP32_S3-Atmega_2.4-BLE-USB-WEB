@@ -300,8 +300,9 @@ window.FlexPadCart = {
 window.updateCartBadge = updateCartBadge;
 
 function bindCartDropdown(signal) {
-  const trigger = document.getElementById('cart-trigger');
-  const dropdown = document.getElementById('cart-dropdown');
+  const dock = document.querySelector('.site-header-actions .site-cart-dock');
+  const trigger = dock?.querySelector('#cart-trigger') ?? document.getElementById('cart-trigger');
+  const dropdown = dock?.querySelector('#cart-dropdown') ?? document.getElementById('cart-dropdown');
   if (!trigger || !dropdown) return;
 
   // IMPORTANT: on re-render les items après un clic (qty +/-),
@@ -328,14 +329,17 @@ function bindCartDropdown(signal) {
     { signal }
   );
 
+  // Phase capture : s’exécute avant la bulle — évite qu’un autre listener (ou la synthèse clic/touch)
+  // ferme le panneau dans le même geste que l’ouverture.
   document.addEventListener(
     'click',
     (e) => {
       const t = e.target;
       if (!(t instanceof Node)) return;
-      if (!dropdown.contains(t) && !trigger.contains(t)) close();
+      if (dropdown.contains(t) || trigger.contains(t)) return;
+      close();
     },
-    { signal }
+    { capture: true, signal }
   );
 
   document.addEventListener(
@@ -466,7 +470,10 @@ function bindQuantityInputs(signal) {
 }
 
 function initCart() {
-  if (!document.getElementById('flexpad-cart-widget')) {
+  const hasCartChrome =
+    document.querySelector('.site-header-actions .site-cart-dock #cart-trigger') ||
+    document.getElementById('flexpad-cart-widget');
+  if (!hasCartChrome) {
     document.dispatchEvent(new CustomEvent('flexpad:cart-ready', { bubbles: true }));
     return;
   }

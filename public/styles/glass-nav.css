@@ -348,6 +348,12 @@ body:has(.main-page) {
   position: relative;
   top: auto;
   right: auto;
+  z-index: 10;
+}
+
+/* Popover panier au-dessus des boutons voisins (thème, connexion) */
+.site-header-actions .cart-dropdown {
+  z-index: 10050;
 }
 
 /* Thème à côté du panier : même gabarit / bordure que .cart-trigger (main.css) */
