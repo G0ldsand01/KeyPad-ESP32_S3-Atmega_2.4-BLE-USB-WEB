@@ -28,11 +28,13 @@ let config = {
         fingerprints: [], // Liste des empreintes: [{id, name, profileId, enrolledDate, lastUsed}]
         maxFingerprints: 10
     },
+    deviceFirmwareVersion: '',
     settings: {
         bleDeviceName: '',
         autoReconnectEnabled: true,
         defaultConnectionType: 'bluetooth',
         checkUpdatesOnStartup: false,
+        otaAutoInstallGithub: false,
         githubFirmwareRepo: '',
         webLoggingEnabled: true,
         theme: 'dark',
@@ -1162,6 +1164,7 @@ function handleESP32Message(data) {
             if (data.outputMode) config.outputMode = data.outputMode;
             if (data.platform) { if (!config.settings) config.settings = {}; config.settings.platform = data.platform; }
             if (data.bleDeviceName && config.settings) config.settings.bleDeviceName = data.bleDeviceName;
+            if (data.firmwareVersion) config.deviceFirmwareVersion = String(data.firmwareVersion);
             if (data.backlight && typeof data.backlight === 'object') {
                 const b = data.backlight;
                 if (b.enabled !== undefined) config.backlight.enabled = !!b.enabled;
@@ -1347,6 +1350,7 @@ function loadConfig() {
             autoReconnectEnabled: savedConfig.settings.autoReconnectEnabled ?? config.settings?.autoReconnectEnabled ?? true,
             defaultConnectionType: savedConfig.settings.defaultConnectionType ?? config.settings?.defaultConnectionType ?? 'bluetooth',
             checkUpdatesOnStartup: savedConfig.settings.checkUpdatesOnStartup ?? config.settings?.checkUpdatesOnStartup ?? false,
+            otaAutoInstallGithub: savedConfig.settings.otaAutoInstallGithub ?? config.settings?.otaAutoInstallGithub ?? false,
             githubFirmwareRepo: savedConfig.settings.githubFirmwareRepo ?? config.settings?.githubFirmwareRepo ?? '',
             webLoggingEnabled: savedConfig.settings.webLoggingEnabled ?? config.settings?.webLoggingEnabled ?? true,
             theme: savedConfig.settings.theme ?? config.settings?.theme ?? 'dark',
@@ -2587,6 +2591,16 @@ function setupSettingsControls() {
             saveConfig();
         });
     }
+
+    const otaAutoInstallGithub = document.getElementById('ota-auto-install-github');
+    if (otaAutoInstallGithub) {
+        otaAutoInstallGithub.checked = config.settings?.otaAutoInstallGithub || false;
+        otaAutoInstallGithub.addEventListener('change', (e) => {
+            if (!config.settings) config.settings = {};
+            config.settings.otaAutoInstallGithub = e.target.checked;
+            saveConfig();
+        });
+    }
     
     // Serial auto-scroll et max lignes
     const serialAutoScroll = document.getElementById('serial-auto-scroll');
@@ -2829,47 +2843,8 @@ function setupSettingsControls() {
     const otaCheckUpdatesBtn = document.getElementById('ota-check-updates-btn');
     const otaGithubRepo = document.getElementById('ota-github-repo');
     if (otaCheckUpdatesBtn) {
-        otaCheckUpdatesBtn.addEventListener('click', async () => {
-            const repo = (otaGithubRepo?.value || config.settings?.githubFirmwareRepo || '').trim();
-            const feedbackEl = document.getElementById('ota-check-feedback');
-            if (!feedbackEl) return;
-            feedbackEl.style.display = 'block';
-            feedbackEl.className = 'ota-check-feedback';
-            feedbackEl.innerHTML = '<span class="ota-check-loading">Vérification des mises à jour…</span>';
-            if (!repo) {
-                feedbackEl.className = 'ota-check-feedback ota-check-error';
-                feedbackEl.innerHTML = 'Indiquez un dépôt GitHub (ex: owner/repo) pour vérifier les mises à jour.';
-                return;
-            }
-            try {
-                const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-                    headers: { Accept: 'application/vnd.github.v3+json' }
-                });
-                if (!res.ok) {
-                    if (res.status === 404) throw new Error('Dépôt ou release introuvable.');
-                    throw new Error(`Erreur API: ${res.status}`);
-                }
-                const data = await res.json();
-                const tag = (data.tag_name || '').replace(/^v/, '');
-                const current = '1.0.0';
-                const binAsset = (data.assets || []).find(a => (a.name || '').toLowerCase().endsWith('.bin'));
-                const downloadUrl = binAsset?.browser_download_url || data.html_url;
-                const isNewer = compareVersions(tag, current) > 0;
-                if (isNewer) {
-                    feedbackEl.className = 'ota-check-feedback ota-check-success';
-                    feedbackEl.innerHTML = `
-                        <strong>Mise à jour disponible : ${data.tag_name || tag}</strong>
-                        <p class="ota-check-desc">${(data.body || '').slice(0, 200)}${(data.body || '').length > 200 ? '…' : ''}</p>
-                        <a href="${downloadUrl}" target="_blank" rel="noopener" class="ota-check-link">Télécharger le firmware</a>
-                    `;
-                } else {
-                    feedbackEl.className = 'ota-check-feedback ota-check-info';
-                    feedbackEl.innerHTML = `Vous êtes à jour (${current}). Dernière release : ${data.tag_name || tag}`;
-                }
-            } catch (err) {
-                feedbackEl.className = 'ota-check-feedback ota-check-error';
-                feedbackEl.innerHTML = 'Erreur : ' + (err.message || 'impossible de vérifier');
-            }
+        otaCheckUpdatesBtn.addEventListener('click', () => {
+            runGithubFirmwareCheck({ autoInstallOta: false });
         });
     }
     if (otaGithubRepo) {
@@ -2882,16 +2857,6 @@ function setupSettingsControls() {
     }
 }
 
-function compareVersions(a, b) {
-    const pa = (a || '0').split('.').map(n => parseInt(n, 10) || 0);
-    const pb = (b || '0').split('.').map(n => parseInt(n, 10) || 0);
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-        const va = pa[i] || 0, vb = pb[i] || 0;
-        if (va !== vb) return va > vb ? 1 : -1;
-    }
-    return 0;
-}
-
 // Convertir ArrayBuffer/Uint8Array en base64 (pour binaire)
 function arrayBufferToBase64(bufferOrView) {
     const bytes = bufferOrView instanceof Uint8Array ? bufferOrView : new Uint8Array(bufferOrView);
@@ -2902,99 +2867,230 @@ function arrayBufferToBase64(bufferOrView) {
     return btoa(binary);
 }
 
-// Fonction pour effectuer une mise à jour OTA
-async function performOTAUpdate(file) {
+function compareVersions(a, b) {
+    const pa = (a || '0').split('.').map(n => parseInt(n, 10) || 0);
+    const pb = (b || '0').split('.').map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const va = pa[i] || 0, vb = pb[i] || 0;
+        if (va !== vb) return va > vb ? 1 : -1;
+    }
+    return 0;
+}
+
+function getReportedFirmwareVersion() {
+    const v = (config.deviceFirmwareVersion || '').trim();
+    if (v) return v;
+    return '0.0.0';
+}
+
+function getOtaGithubRepoFromUI() {
+    const otaGithubRepo = document.getElementById('ota-github-repo');
+    return (otaGithubRepo?.value || config.settings?.githubFirmwareRepo || '').trim();
+}
+
+async function fetchGithubReleaseBinArrayBuffer(browserDownloadUrl) {
+    if (!browserDownloadUrl || !String(browserDownloadUrl).startsWith('https://')) {
+        throw new Error('URL de téléchargement du firmware invalide.');
+    }
+    const binRes = await fetch(browserDownloadUrl);
+    if (!binRes.ok) throw new Error(`Téléchargement du .bin : ${binRes.status}`);
+    return await binRes.arrayBuffer();
+}
+
+async function performOTAUpdateWithBuffer(arrayBuffer, filename) {
     const otaProgress = document.getElementById('ota-progress');
     const otaProgressBar = document.getElementById('ota-progress-bar');
     const otaProgressText = document.getElementById('ota-progress-text');
     const otaUpdateBtn = document.getElementById('ota-update-btn');
-    
+
     try {
-        const arrayBuffer = await file.arrayBuffer();
         const fileSize = arrayBuffer.byteLength;
-        
         const rawChunkSize = 256;
         const totalChunks = Math.ceil(fileSize / rawChunkSize);
-        
-        otaProgress.style.display = 'block';
-        otaProgressBar.style.width = '0%';
-        otaProgressBar.setAttribute('aria-valuenow', 0);
-        otaProgressText.textContent = '0%';
-        otaUpdateBtn.disabled = true;
+
+        if (otaProgress) otaProgress.style.display = 'block';
+        if (otaProgressBar) {
+            otaProgressBar.style.width = '0%';
+            otaProgressBar.setAttribute('aria-valuenow', 0);
+        }
+        if (otaProgressText) otaProgressText.textContent = '0%';
+        if (otaUpdateBtn) otaUpdateBtn.disabled = true;
         const otaCheckBtn = document.getElementById('ota-check-updates-btn');
         if (otaCheckBtn) otaCheckBtn.disabled = true;
         const otaPanel = document.querySelector('.ota-panel');
         const settingsLayout = document.getElementById('settings-layout');
         if (otaPanel) otaPanel.classList.add('ota-updating');
         if (settingsLayout) settingsLayout.classList.add('ota-updating');
-        
+
         const startMessage = {
             type: 'ota_start',
-            filename: file.name,
+            filename: filename || 'firmware.bin',
             size: fileSize,
             chunks: totalChunks
         };
         await sendDataToESP32(JSON.stringify(startMessage));
-        
+
         await new Promise(resolve => setTimeout(resolve, 500));
-        
+
         const bytes = new Uint8Array(arrayBuffer);
         for (let i = 0; i < totalChunks; i++) {
             const start = i * rawChunkSize;
             const end = Math.min(start + rawChunkSize, fileSize);
             const chunk = bytes.subarray(start, end);
             const chunkBase64 = arrayBufferToBase64(chunk);
-            
+
             const chunkMessage = {
                 type: 'ota_chunk',
                 index: i,
                 data: chunkBase64,
                 encoded: true
             };
-            
+
             const messageStr = JSON.stringify(chunkMessage);
             const messageSize = new TextEncoder().encode(messageStr).length;
-            
+
             if (messageSize > 512) {
                 throw new Error(`Chunk ${i} trop grand (${messageSize} bytes).`);
             }
-            
+
             await sendDataToESP32(messageStr);
-            
+
             const progress = Math.round(((i + 1) / totalChunks) * 100);
-            otaProgressBar.style.width = progress + '%';
-            otaProgressBar.setAttribute('aria-valuenow', progress);
-            otaProgressText.textContent = `${progress}% (${i + 1}/${totalChunks})`;
-            
+            if (otaProgressBar) {
+                otaProgressBar.style.width = progress + '%';
+                otaProgressBar.setAttribute('aria-valuenow', progress);
+            }
+            if (otaProgressText) otaProgressText.textContent = `${progress}% (${i + 1}/${totalChunks})`;
+
             await new Promise(resolve => setTimeout(resolve, 80));
         }
-        
+
         await sendDataToESP32(JSON.stringify({ type: 'ota_end' }));
-        
-        otaProgressText.textContent = 'Mise à jour terminée, redémarrage...';
-        otaProgressBar.style.width = '100%';
-        otaProgressBar.setAttribute('aria-valuenow', 100);
-        
+
+        if (otaProgressText) otaProgressText.textContent = 'Mise à jour terminée, redémarrage...';
+        if (otaProgressBar) {
+            otaProgressBar.style.width = '100%';
+            otaProgressBar.setAttribute('aria-valuenow', 100);
+        }
+
         setTimeout(() => {
-            otaProgress.style.display = 'none';
-            otaUpdateBtn.disabled = false;
-            const otaCheckBtn = document.getElementById('ota-check-updates-btn');
-            if (otaCheckBtn) otaCheckBtn.disabled = false;
+            if (otaProgress) otaProgress.style.display = 'none';
+            if (otaUpdateBtn) otaUpdateBtn.disabled = false;
+            const otaCheckBtn2 = document.getElementById('ota-check-updates-btn');
+            if (otaCheckBtn2) otaCheckBtn2.disabled = false;
             const otaFileInput = document.getElementById('ota-file-input');
             if (otaFileInput) otaFileInput.value = '';
             document.querySelector('.ota-panel')?.classList.remove('ota-updating');
             document.getElementById('settings-layout')?.classList.remove('ota-updating');
         }, 3000);
-        
     } catch (error) {
         console.error('OTA Update Error:', error);
         alert('Erreur lors de la mise à jour: ' + error.message);
-        otaProgress.style.display = 'none';
+        if (otaProgress) otaProgress.style.display = 'none';
         if (otaUpdateBtn) otaUpdateBtn.disabled = false;
         const otaCheckBtn = document.getElementById('ota-check-updates-btn');
         if (otaCheckBtn) otaCheckBtn.disabled = false;
         document.querySelector('.ota-panel')?.classList.remove('ota-updating');
         document.getElementById('settings-layout')?.classList.remove('ota-updating');
+    }
+}
+
+async function performOTAUpdate(file) {
+    await performOTAUpdateWithBuffer(await file.arrayBuffer(), file.name);
+}
+
+/**
+ * Vérifie la dernière release GitHub et affiche le résultat dans #ota-check-feedback.
+ * @param {{ repo?: string, autoInstallOta?: boolean }} options
+ */
+async function runGithubFirmwareCheck(options = {}) {
+    const { repo: repoOpt, autoInstallOta = false } = options;
+    const feedbackEl = document.getElementById('ota-check-feedback');
+    if (!feedbackEl) return;
+
+    const repo = (repoOpt ?? getOtaGithubRepoFromUI()).trim();
+    feedbackEl.style.display = 'block';
+    feedbackEl.className = 'ota-check-feedback';
+    feedbackEl.innerHTML = '<span class="ota-check-loading">Vérification des mises à jour…</span>';
+
+    if (!repo) {
+        feedbackEl.className = 'ota-check-feedback ota-check-error';
+        feedbackEl.innerHTML = 'Indiquez un dépôt GitHub (ex: owner/repo) pour vérifier les mises à jour.';
+        return;
+    }
+
+    const parts = repo.split('/').map(s => s.trim()).filter(Boolean);
+    if (parts.length !== 2) {
+        feedbackEl.className = 'ota-check-feedback ota-check-error';
+        feedbackEl.innerHTML = 'Format de dépôt invalide. Utilisez owner/repo.';
+        return;
+    }
+    const apiPath = `${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`;
+
+    try {
+        const res = await fetch(`https://api.github.com/repos/${apiPath}/releases/latest`, {
+            headers: { Accept: 'application/vnd.github.v3+json' }
+        });
+        if (!res.ok) {
+            if (res.status === 404) throw new Error('Dépôt ou release introuvable.');
+            throw new Error(`Erreur API: ${res.status}`);
+        }
+        const data = await res.json();
+        const tagRaw = data.tag_name || '';
+        const tag = tagRaw.replace(/^v/i, '');
+        const current = getReportedFirmwareVersion();
+        const binAsset = (data.assets || []).find(a => (a.name || '').toLowerCase().endsWith('.bin'));
+        const downloadUrl = binAsset?.browser_download_url || data.html_url;
+        const isNewer = compareVersions(tag, current) > 0;
+
+        if (isNewer) {
+            feedbackEl.className = 'ota-check-feedback ota-check-success';
+            feedbackEl.innerHTML = `
+                <strong>Mise à jour disponible : ${data.tag_name || tag}</strong>
+                <p class="ota-check-desc">Firmware actuel (appareil) : <strong>${current}</strong></p>
+                <p class="ota-check-desc">${(data.body || '').slice(0, 200)}${(data.body || '').length > 200 ? '…' : ''}</p>
+                <a href="${downloadUrl}" target="_blank" rel="noopener" class="ota-check-link">Télécharger le firmware</a>
+                ${binAsset ? '<button type="button" class="btn btn-primary btn-block" id="ota-install-from-github-btn" style="margin-top:0.75rem;">Installer cette version via OTA</button>' : ''}
+            `;
+
+            const installBtn = document.getElementById('ota-install-from-github-btn');
+            if (binAsset && installBtn) {
+                const dl = binAsset.browser_download_url;
+                const fname = binAsset.name || 'firmware.bin';
+                installBtn.addEventListener('click', async () => {
+                    if (!config.connected) {
+                        alert('Connectez le Macropad (USB ou Bluetooth) avant l\'OTA.');
+                        return;
+                    }
+                    if (!confirm(`Installer ${data.tag_name || tag} (${fname}) par OTA ? Ne pas déconnecter pendant le transfert.`)) return;
+                    try {
+                        installBtn.disabled = true;
+                        const buf = await fetchGithubReleaseBinArrayBuffer(dl);
+                        await performOTAUpdateWithBuffer(buf, fname);
+                    } catch (err) {
+                        console.error(err);
+                        alert('Erreur : ' + (err.message || 'OTA'));
+                        installBtn.disabled = false;
+                    }
+                }, { once: true });
+            }
+
+            if (autoInstallOta && binAsset && config.connected) {
+                const go = confirm(`Une mise à jour ${data.tag_name || tag} est disponible (actuel : ${current}). Lancer l'installation OTA depuis GitHub maintenant ?`);
+                if (go) {
+                    const buf = await fetchGithubReleaseBinArrayBuffer(binAsset.browser_download_url);
+                    await performOTAUpdateWithBuffer(buf, binAsset.name || 'firmware.bin');
+                }
+            } else if (autoInstallOta && binAsset && !config.connected) {
+                feedbackEl.insertAdjacentHTML('beforeend', '<p class="ota-check-desc" style="margin-top:0.5rem;">Connectez le Macropad pour installer automatiquement, ou utilisez le bouton ci-dessus une fois connecté.</p>');
+            }
+        } else {
+            feedbackEl.className = 'ota-check-feedback ota-check-info';
+            feedbackEl.innerHTML = `Vous êtes à jour (appareil : <strong>${current}</strong>). Dernière release : ${data.tag_name || tag}`;
+        }
+    } catch (err) {
+        feedbackEl.className = 'ota-check-feedback ota-check-error';
+        feedbackEl.innerHTML = 'Erreur : ' + (err.message || 'impossible de vérifier');
     }
 }
 
@@ -3059,6 +3155,8 @@ function loadSettings() {
         if (defaultConnType) defaultConnType.value = config.settings?.defaultConnectionType || 'bluetooth';
         const checkUpdatesStartup = document.getElementById('check-updates-on-startup');
         if (checkUpdatesStartup) checkUpdatesStartup.checked = config.settings?.checkUpdatesOnStartup || false;
+        const otaAutoInstallGithub = document.getElementById('ota-auto-install-github');
+        if (otaAutoInstallGithub) otaAutoInstallGithub.checked = config.settings?.otaAutoInstallGithub || false;
         if (webLoggingToggle) {
             webLoggingToggle.checked = config.settings?.webLoggingEnabled !== false;
             if (settingsLayout) settingsLayout.classList.toggle('web-logging-off', !webLoggingToggle.checked);
@@ -3088,6 +3186,7 @@ function resetSettings() {
     const keepAutoReconnect = config.settings?.autoReconnectEnabled !== false;
     const keepDefaultConn = config.settings?.defaultConnectionType || 'bluetooth';
     const keepCheckUpdates = config.settings?.checkUpdatesOnStartup || false;
+    const keepOtaAutoGithub = config.settings?.otaAutoInstallGithub || false;
     const keepGithubRepo = config.settings?.githubFirmwareRepo || '';
     const keepWebLogging = config.settings?.webLoggingEnabled !== false;
     const keepTheme = config.settings?.theme || 'dark';
@@ -3098,6 +3197,7 @@ function resetSettings() {
         autoReconnectEnabled: keepAutoReconnect,
         defaultConnectionType: keepDefaultConn,
         checkUpdatesOnStartup: keepCheckUpdates,
+        otaAutoInstallGithub: keepOtaAutoGithub,
         githubFirmwareRepo: keepGithubRepo,
         webLoggingEnabled: keepWebLogging,
         theme: keepTheme,
@@ -3786,8 +3886,9 @@ function setupTabs() {
             if (targetTab === 'settings' && config.settings?.checkUpdatesOnStartup) {
                 const repo = (document.getElementById('ota-github-repo')?.value || config.settings?.githubFirmwareRepo || '').trim();
                 if (repo) {
-                    const btn = document.getElementById('ota-check-updates-btn');
-                    if (btn) setTimeout(() => btn.click(), 300);
+                    setTimeout(() => {
+                        runGithubFirmwareCheck({ autoInstallOta: !!config.settings?.otaAutoInstallGithub });
+                    }, 300);
                 }
             }
             

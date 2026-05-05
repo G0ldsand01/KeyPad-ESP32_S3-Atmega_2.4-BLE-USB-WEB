@@ -1871,6 +1871,11 @@ void handle_display_image_message(JsonObject& doc) {
 void send_config_to_web() {
     StaticJsonDocument<2560> doc;
     doc["type"] = "config";
+    {
+        char fv[24];
+        snprintf(fv, sizeof(fv), "%d.%d.%d", FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
+        doc["firmwareVersion"] = fv;
+    }
     doc["rows"] = NUM_ROWS;
     doc["cols"] = NUM_COLS;
     doc["activeProfile"] = getStoredProfileName(activeProfileIndex);
