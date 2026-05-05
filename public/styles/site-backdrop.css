@@ -157,3 +157,29 @@
   50% { opacity: 0.7; }
 }
 
+/* Plus spécifique que :root ci-dessus : évite d'écraser --site-bg du thème clair (global.css). */
+html[data-theme="light"] {
+  --site-bg: #cdd4df;
+  --flexpad-gold: #8a7344;
+  --flexpad-gold-light: #c9a227;
+}
+
+html[data-theme="light"] .parallax-layer--deep {
+  background: var(--site-bg);
+}
+
+html[data-theme="light"] .parallax-layer--grid {
+  background-image:
+    linear-gradient(rgba(9, 105, 218, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(9, 105, 218, 0.06) 1px, transparent 1px);
+}
+
+html[data-theme="light"] .hero-circuit {
+  background: linear-gradient(90deg, transparent, rgba(9, 105, 218, 0.25), transparent);
+}
+
+html[data-theme="light"] .hero-circuit::before,
+html[data-theme="light"] .hero-circuit::after {
+  background: rgba(9, 105, 218, 0.4);
+}
+

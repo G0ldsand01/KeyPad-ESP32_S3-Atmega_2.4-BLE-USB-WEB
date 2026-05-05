@@ -34,6 +34,44 @@ html {
   --nav-dock-offset: 5.25rem;
 }
 
+[data-theme="light"] {
+  color-scheme: light;
+  --flexpad-text: #24292f;
+  --flexpad-gray: #57606a;
+  --site-bg: #d0d7e2;
+  --site-surface: #e2e7ef;
+  --site-surface-elevated: #e8ecf3;
+  --site-border: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="light"] .navbar {
+  background: rgba(226, 231, 239, 0.94);
+  border-bottom-color: rgba(0, 0, 0, 0.09);
+}
+
+[data-theme="light"] .navbar-link {
+  color: var(--flexpad-text);
+}
+
+[data-theme="light"] .main-page {
+  color: var(--flexpad-text);
+}
+
+/* Textes conçus pour le fond sombre : en clair, utiliser la couleur de texte du thème */
+[data-theme="light"] .hero-tagline,
+[data-theme="light"] .product-info h3,
+[data-theme="light"] .contact-card h4,
+[data-theme="light"] .creator-info h3,
+[data-theme="light"] .product-price,
+[data-theme="light"] .feature-card h4,
+[data-theme="light"] .faq-item strong,
+[data-theme="light"] .cart-preview-details h4,
+[data-theme="light"] .cart-item-details h3,
+[data-theme="light"] .dash-chrome__title,
+[data-theme="light"] .dash-chrome__user strong {
+  color: var(--flexpad-text);
+}
+
 .main-page {
   font-family: inherit;
   overflow-x: hidden;
@@ -201,25 +239,7 @@ html {
   }
 }
 
-/* ========== En-tête fixe : connexion + panier ========== */
-.site-header-actions {
-  position: fixed;
-  top: 1rem;
-  right: max(1rem, env(safe-area-inset-right));
-  /* Au-dessus de .glass-nav-dock (z-index 2100) pour que le panier et le dropdown soient cliquables */
-  z-index: 2200;
-  display: flex;
-  flex-direction: row-reverse;
-  align-items: flex-start;
-  gap: 0.5rem;
-  font-family: inherit;
-}
-
-.site-header-actions .site-cart-dock {
-  position: relative;
-  top: auto;
-  right: auto;
-}
+/* .site-header-actions : voir glass-nav.css (chargé sur toutes les pages) */
 
 .auth-dock {
   font-family: inherit;

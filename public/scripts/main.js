@@ -196,5 +196,21 @@ function initPage() {
   initLucideIcons();
 }
 
-document.addEventListener('astro:page-load', initPage);
-whenDocumentReady(initPage);
+function applyStoredTheme() {
+  try {
+    const t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function bootMain() {
+  applyStoredTheme();
+  initPage();
+}
+
+document.addEventListener('astro:page-load', bootMain);
+whenDocumentReady(bootMain);

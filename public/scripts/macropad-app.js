@@ -177,8 +177,8 @@ function migrateConfigToProfiles() {
 export function initApp() {
     try {
         setupTabs();
-        setupTheme();
         loadConfig();
+        setupTheme();
         const connEl = document.getElementById('connection-type');
         if (connEl && config.settings?.defaultConnectionType) connEl.value = config.settings.defaultConnectionType;
         migrateConfigToProfiles();
@@ -212,34 +212,49 @@ export function initApp() {
 function setupTheme() {
     const themeToggle = document.getElementById('theme-toggle');
     const themeIcon = document.getElementById('theme-icon');
-    if (!themeToggle) return;
-    
+
     // Charger le thème sauvegardé ou utiliser 'dark' par défaut
-    const savedTheme = localStorage.getItem('theme') || 'dark';
+    let savedTheme = 'dark';
+    try {
+        const ls = localStorage.getItem('theme');
+        if (ls === 'light' || ls === 'dark') savedTheme = ls;
+    } catch (_) { /* ignore */ }
     document.documentElement.setAttribute('data-theme', savedTheme);
-    updateThemeIcon(savedTheme, themeIcon);
-    
+    if (themeIcon) updateThemeIcon(savedTheme, themeIcon);
+
+    if (!themeToggle) return;
+
+    // initApp() peut être invoqué plusieurs fois (ex. astro:page-load + DOMContentLoaded) :
+    // sans garde, plusieurs listeners annulent le toggle (double inversion à chaque clic).
+    const wasBound = themeToggle.dataset.macropadThemeBound === '1';
+
+    if (wasBound) return;
+    themeToggle.dataset.macropadThemeBound = '1';
+
     themeToggle.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        
-        const currentTheme = document.documentElement.getAttribute('data-theme');
+
+        const raw = document.documentElement.getAttribute('data-theme');
+        const currentTheme = raw === 'light' ? 'light' : 'dark';
         const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-        
+
         document.documentElement.setAttribute('data-theme', newTheme);
-        localStorage.setItem('theme', newTheme);
+        try {
+            localStorage.setItem('theme', newTheme);
+        } catch (_) { /* ignore */ }
         if (config.settings) config.settings.theme = newTheme;
-        saveConfig();
-        
-        // Mettre à jour l'icône
+        try {
+            saveConfig();
+        } catch (err) {
+            console.warn('[THEME] saveConfig:', err);
+        }
+
         updateThemeIcon(newTheme, themeIcon);
-        
-        // Réinitialiser les icônes Lucide
+
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
         }
-        
-        console.log('Thème changé:', newTheme);
     });
 }
 
@@ -937,7 +952,10 @@ async function connectToESP32() {
         
         // Envoyer la config backlight (env_brightness, etc.) pour que la LED suive la luminosité
         await sendBacklightConfig();
-        
+
+        // Rafraîchir la plateforme affichée (ligne HOTE) sans attendre « Appliquer les paramètres »
+        await sendDataToESP32(JSON.stringify({ type: 'settings', platform: detectPlatform() }));
+
         // BLE: ne pas envoyer get_light — l'ESP32 pousse déjà la luminosité toutes les 5 s
         // (get_light provoquait des déconnexions GATT sur Android)
     }
@@ -1353,7 +1371,14 @@ function loadConfig() {
             otaAutoInstallGithub: savedConfig.settings.otaAutoInstallGithub ?? config.settings?.otaAutoInstallGithub ?? false,
             githubFirmwareRepo: savedConfig.settings.githubFirmwareRepo ?? config.settings?.githubFirmwareRepo ?? '',
             webLoggingEnabled: savedConfig.settings.webLoggingEnabled ?? config.settings?.webLoggingEnabled ?? true,
-            theme: savedConfig.settings.theme ?? config.settings?.theme ?? 'dark',
+            // Préférence globale (toutes les pages) : localStorage gagne sur l'ancien macropadConfig.
+            theme: (() => {
+                try {
+                    const ls = localStorage.getItem('theme');
+                    if (ls === 'light' || ls === 'dark') return ls;
+                } catch (_) { /* ignore */ }
+                return savedConfig.settings.theme ?? config.settings?.theme ?? 'dark';
+            })(),
             encoderStep: parseInt(savedConfig.settings.encoderStep ?? config.settings?.encoderStep ?? 1, 10) || 1,
             serialAutoScroll: savedConfig.settings.serialAutoScroll ?? true,
             serialMaxLines: savedConfig.settings.serialMaxLines ?? 500,
@@ -2905,7 +2930,8 @@ async function performOTAUpdateWithBuffer(arrayBuffer, filename) {
 
     try {
         const fileSize = arrayBuffer.byteLength;
-        const rawChunkSize = 256;
+        // Taille brute par message ota_chunk (base64 dans du JSON). Doit rester <= OTA_DECODE_BUF_SIZE (firmware).
+        const rawChunkSize = 2048;
         const totalChunks = Math.ceil(fileSize / rawChunkSize);
 
         if (otaProgress) otaProgress.style.display = 'block';
@@ -2948,14 +2974,16 @@ async function performOTAUpdateWithBuffer(arrayBuffer, filename) {
 
             const messageStr = JSON.stringify(chunkMessage);
             const messageSize = new TextEncoder().encode(messageStr).length;
-
-            if (messageSize > 512) {
-                throw new Error(`Chunk ${i} trop grand (${messageSize} bytes).`);
+            // ~2048 o raw → ~2,8 ko JSON UTF-8 ; StaticJsonDocument message ingress = 8192 côté firmware.
+            if (messageSize > 6144) {
+                throw new Error(`Chunk ${i} trop grand (${messageSize} bytes). Réduire rawChunkSize dans performOTAUpdateWithBuffer.`);
             }
 
             await sendDataToESP32(messageStr);
 
-            const progress = Math.round(((i + 1) / totalChunks) * 100);
+            const progress = totalChunks > 0
+                ? Math.min(100, Math.ceil(((i + 1) / totalChunks) * 100))
+                : 0;
             if (otaProgressBar) {
                 otaProgressBar.style.width = progress + '%';
                 otaProgressBar.setAttribute('aria-valuenow', progress);
@@ -3105,15 +3133,19 @@ function handleOTAMessage(data) {
             console.log('[OTA] Update started');
             if (otaProgress) otaProgress.style.display = 'block';
             break;
-        case 'progress':
+        case 'progress': {
+            const total = Math.max(1, Number(data.total) || 1);
+            const chunk = Math.min(total, Math.max(0, Number(data.chunk) || 0));
+            const pct = Math.min(100, Math.ceil((chunk / total) * 100));
             if (otaProgressBar) {
-                otaProgressBar.style.width = data.progress + '%';
-                otaProgressBar.setAttribute('aria-valuenow', data.progress);
+                otaProgressBar.style.width = pct + '%';
+                otaProgressBar.setAttribute('aria-valuenow', pct);
             }
             if (otaProgressText) {
-                otaProgressText.textContent = `${data.progress}% (${data.chunk}/${data.total})`;
+                otaProgressText.textContent = `${pct}% (${chunk}/${total})`;
             }
             break;
+        }
         case 'completed':
             console.log('[OTA] Update completed');
             if (otaProgressText) {
@@ -3896,5 +3928,20 @@ function setupTabs() {
                 lucide.createIcons();
             }
         });
+    });
+}
+
+/** Persistance macropadConfig quand le thème est changé via le bouton global (#site-theme-toggle). */
+if (typeof document !== 'undefined' && !globalThis.__flexpadThemeMacropadSync) {
+    globalThis.__flexpadThemeMacropadSync = true;
+    document.addEventListener('flexpad-theme-changed', (e) => {
+        const t = e.detail?.theme;
+        if (t !== 'light' && t !== 'dark') return;
+        if (config && config.settings) config.settings.theme = t;
+        try {
+            saveConfig();
+        } catch (err) {
+            console.warn('[THEME] saveConfig:', err);
+        }
     });
 }

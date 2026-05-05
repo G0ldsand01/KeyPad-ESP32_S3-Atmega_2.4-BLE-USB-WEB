@@ -3,6 +3,7 @@ import { ViewTransitions } from 'astro:transitions';
 import GlassNav from '../components/GlassNav.astro';
 import AuthDock from '../components/AuthDock.astro';
 import CartWidget from '../components/CartWidget.astro';
+import ThemeToggle from '../components/ThemeToggle.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 
 interface Props {
@@ -32,6 +33,9 @@ const gitCommitSha =
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script is:inline>
+    (function(){try{var t=localStorage.getItem('theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+  </script>
   <title>{title}</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23666'><rect x='2' y='6' width='20' height='12' rx='1' fill='none' stroke='currentColor' stroke-width='2'/><rect x='5' y='9' width='2' height='2'/><rect x='9' y='9' width='2' height='2'/><rect x='13' y='9' width='2' height='2'/><rect x='17' y='9' width='2' height='2'/></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -44,6 +48,9 @@ const gitCommitSha =
   )}
   {!site && backdrop && (
     <link rel="stylesheet" href="/styles/site-backdrop.css" />
+  )}
+  {!site && backdrop && (
+    <link rel="stylesheet" href="/styles/site-header-chrome.css" />
   )}
   <link rel="stylesheet" href="/styles/glass-nav.css" />
   <meta name="flexpad-build" content={assetVersion} />
@@ -60,9 +67,10 @@ const gitCommitSha =
     data-git-sha={gitCommitSha ?? ''}
   />
   <GlassNav />
-  {site && (
+  {(site || backdrop) && (
     <div class="site-header-actions">
       <AuthDock />
+      <ThemeToggle variant="dock" />
       <CartWidget />
     </div>
   )}
@@ -91,6 +99,7 @@ const gitCommitSha =
   ) : (
     <slot />
   )}
+  <script src={`/scripts/theme-toggle.js?v=${assetVersion}`} type="module"></script>
   <script src={`/scripts/main.js?v=${assetVersion}`} type="module"></script>
   <script src={`/scripts/cart.js?v=${assetVersion}`} type="module"></script>
   <script src={`/scripts/checkout-page.js?v=${assetVersion}`} type="module"></script>

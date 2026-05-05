@@ -1,0 +1,24 @@
+---
+/**
+ * Bouton thème global — /scripts/theme-toggle.js
+ * variant="dock" : à côté du widget panier (même style que .cart-trigger).
+ */
+interface Props {
+  variant?: 'dock';
+}
+
+const { variant = 'dock' } = Astro.props;
+const isDock = variant === 'dock';
+---
+
+<div class:list={['site-theme-wrap', isDock && 'site-theme-wrap--dock']}>
+  <button
+    type="button"
+    id="site-theme-toggle"
+    class:list={['site-theme-toggle', isDock && 'site-theme-toggle--dock']}
+    title="Changer de thème"
+    aria-label="Basculer entre thème clair et sombre"
+  >
+    <i data-lucide="sun" id="site-theme-icon" class="site-theme-toggle__icon" aria-hidden="true"></i>
+  </button>
+</div>

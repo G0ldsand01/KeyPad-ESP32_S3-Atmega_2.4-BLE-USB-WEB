@@ -16,8 +16,8 @@
 }
 
 [data-theme="light"] {
-  --nav-glass-bg: rgba(255, 255, 255, 0.65);
-  --nav-glass-bg-strong: rgba(255, 255, 255, 0.82);
+  --nav-glass-bg: rgba(226, 231, 239, 0.72);
+  --nav-glass-bg-strong: rgba(232, 236, 243, 0.9);
   --nav-glass-border: rgba(0, 0, 0, 0.08);
   --nav-glass-highlight: rgba(9, 105, 218, 0.12);
   --nav-link: #24292f;
@@ -329,4 +329,75 @@ body:has(.main-page) {
   .glass-nav__toggle-bars span {
     transition: none;
   }
+}
+
+/* ========== En-tête fixe : connexion + thème (à côté du panier) + panier ========== */
+.site-header-actions {
+  position: fixed;
+  top: 1rem;
+  right: var(--site-nav-edge-right);
+  z-index: 2200;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-family: inherit;
+}
+
+.site-header-actions .site-cart-dock {
+  position: relative;
+  top: auto;
+  right: auto;
+}
+
+/* Thème à côté du panier : même gabarit / bordure que .cart-trigger (main.css) */
+.site-theme-wrap--dock {
+  display: flex;
+  align-items: flex-start;
+  flex-shrink: 0;
+}
+
+.site-theme-toggle.site-theme-toggle--dock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  margin: 0;
+  font-family: inherit;
+  border-radius: 12px;
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  background: transparent;
+  color: #d4af37;
+  cursor: pointer;
+  transition: background 0.3s, border-color 0.3s, color 0.3s;
+}
+
+.site-theme-toggle.site-theme-toggle--dock:hover {
+  background: rgba(212, 175, 55, 0.15);
+  border-color: #d4af37;
+}
+
+.site-theme-toggle.site-theme-toggle--dock:focus-visible {
+  outline: 2px solid rgba(212, 175, 55, 0.75);
+  outline-offset: 2px;
+}
+
+[data-theme='light'] .site-theme-toggle.site-theme-toggle--dock {
+  background: transparent;
+  border-color: rgba(212, 175, 55, 0.35);
+  color: #c9a227;
+}
+
+[data-theme='light'] .site-theme-toggle.site-theme-toggle--dock:hover {
+  background: rgba(212, 175, 55, 0.1);
+  border-color: #b8962e;
+}
+
+.site-theme-toggle--dock .site-theme-toggle__icon,
+.site-theme-toggle--dock svg {
+  width: 22px;
+  height: 22px;
 }

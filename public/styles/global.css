@@ -143,16 +143,23 @@ html {
     --warning-color: #9a6700;
     --danger-color: #cf222e;
     --secondary-color: #656d76;
-    --bg-color: #ffffff;
-    --surface-color: #f6f8fa;
-    --surface-light: #ffffff;
+    /* Fond clair adouci (pas de blanc pur) */
+    --bg-color: #d8dee8;
+    --surface-color: #e4e9f0;
+    --surface-light: #eceff4;
     --text-primary: #24292f;
     --text-secondary: #656d76;
-    --border-color: #d0d7de;
-    --border-dark: #d8dee4;
+    --border-color: #c5cdd8;
+    --border-dark: #b8c0cc;
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
     --accent-gradient: linear-gradient(135deg, #0969da 0%, #218bff 100%);
+    /* Page /config (backdrop) + cartes type hub */
+    --site-bg: #d2d9e4;
+    --card-bg: rgba(228, 234, 242, 0.92);
+    --card-bg-hover: #e8ecf3;
+    --card-border: rgba(0, 0, 0, 0.08);
+    --card-glow: rgba(9, 105, 218, 0.06);
 }
 
 body {
@@ -1491,6 +1498,24 @@ header h1:hover .header-icon {
     background: var(--surface-color);
     border: 1px solid var(--border-color);
     box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .settings-section-card {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .settings-section-card:hover {
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.09);
+    transform: translateY(-2px);
+}
+
+[data-theme="light"] .config-panel:hover,
+[data-theme="light"] .settings-panel:hover,
+[data-theme="light"] .backlight-panel:hover,
+[data-theme="light"] .fingerprint-panel:hover,
+[data-theme="light"] .display-panel:hover {
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.08);
+    transform: translateY(-2px);
 }
 
 .panel-title {

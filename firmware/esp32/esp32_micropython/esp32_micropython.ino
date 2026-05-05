@@ -563,6 +563,24 @@ String bleSerialBuffer = "";
 bool BLE_AVAILABLE = false;
 
 String platformDetected = "unknown";
+
+static String normalize_platform_value(String s) {
+    s.trim();
+    s.toLowerCase();
+    if (s == "windows" || s == "macos" || s == "linux" || s == "android" || s == "ios" || s == "cros" || s == "unknown")
+        return s;
+    return String("unknown");
+}
+
+static void apply_platform_from_web(const String& raw) {
+    platformDetected = normalize_platform_value(raw);
+    preferences.putString("platform", platformDetected);
+    Serial.printf("[CONFIG] Platform: %s\n", platformDetected.c_str());
+#if USE_ESP32_DISPLAY_ST7789
+    render_display_data_local();
+#endif
+}
+
 Adafruit_NeoPixel ledStrip(LED_STRIP_MAX, LED_STRIP_PIN, NEO_GRB + NEO_KHZ800);
 
 // Longueur active de la chaîne (≤ LED_STRIP_MAX) + animations rétroéclairage
@@ -594,7 +612,8 @@ bool ota_in_progress = false;
 int ota_chunk_count = 0;
 int ota_total_chunks = 0;
 size_t ota_file_size = 0;
-#define OTA_DECODE_BUF_SIZE 384  // Base64 decode buffer (256 bytes raw -> 344 chars base64)
+// Doit être >= taille max d'un chunk OTA décodé (Base64 → binaire), aligné sur macropad-app.js (rawChunkSize).
+#define OTA_DECODE_BUF_SIZE 2112
 
 String last_key_pressed = "";
 unsigned long last_light_poll = 0;
@@ -955,7 +974,13 @@ void setup() {
 
     // NVS + lumière avant USB/BLE au réveil matrice → rétro + strip le plus tôt possible.
     preferences.begin("macropad", false);
-    platformDetected = preferences.getString("platform", "unknown");
+    {
+        String rawPlatform = preferences.getString("platform", "unknown");
+        platformDetected = normalize_platform_value(rawPlatform);
+        if (platformDetected != rawPlatform) {
+            preferences.putString("platform", platformDetected);
+        }
+    }
     profileCount = preferences.getUChar("profile_count", PROFILE_COUNT_DEFAULT);
     if (profileCount == 0 || profileCount > 10) profileCount = PROFILE_COUNT_DEFAULT;
     activeProfileIndex = preferences.getUChar("active_profile", 0) % profileCount;
@@ -1406,8 +1431,7 @@ void processWebMessage(String message) {
     } else if (msg_type == "settings") {
         JsonObject settingsObj = doc.as<JsonObject>();
         if (settingsObj.containsKey("platform")) {
-            platformDetected = settingsObj["platform"].as<String>();
-            preferences.putString("platform", platformDetected);
+            apply_platform_from_web(settingsObj["platform"].as<String>());
         }
         if (settingsObj.containsKey("bleDeviceName")) {
             String name = settingsObj["bleDeviceName"].as<String>();
@@ -1498,9 +1522,7 @@ void handle_config_message(JsonObject& data) {
     KEYMAP[PROFILE_KEY_ROW][PROFILE_KEY_COL] = "PROFILE";
     
     if (data.containsKey("platform")) {
-        platformDetected = data["platform"].as<String>();
-        preferences.putString("platform", platformDetected);
-        Serial.printf("[CONFIG] Platform: %s\n", platformDetected.c_str());
+        apply_platform_from_web(data["platform"].as<String>());
     }
     
     if (data.containsKey("keys")) {
@@ -2361,7 +2383,13 @@ void handle_ota_chunk(JsonObject& data) {
     }
     
     ota_chunk_count++;
-    int progress = (ota_total_chunks > 0) ? (ota_chunk_count * 100 / ota_total_chunks) : 0;
+    // Division entière tronquait à 0 % pour les premiers chunks (ex. 4/527).
+    int progress = 0;
+    if (ota_total_chunks > 0) {
+        progress = (ota_chunk_count * 100 + ota_total_chunks / 2) / ota_total_chunks;
+        if (progress == 0 && ota_chunk_count > 0) progress = 1;
+        if (progress > 100) progress = 100;
+    }
     
     StaticJsonDocument<256> response;
     response["type"] = "ota_status";
