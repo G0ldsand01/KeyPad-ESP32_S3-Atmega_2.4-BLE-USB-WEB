@@ -5,8 +5,7 @@ import { getSession } from 'auth-astro/server';
 import { desc, eq } from 'drizzle-orm';
 import { db } from '../../../../db';
 import { orders, users } from '../../../../db/schema';
-import { formatCadFromCents } from '../../../../lib/orders';
-import type { CartLine } from '../../../../lib/orders';
+import { formatCadFromCents, parseOrderCartLines } from '../../../../lib/orders';
 
 export const prerender = false;
 
@@ -27,15 +26,6 @@ const rows = dbEnabled
       .leftJoin(users, eq(orders.userId, users.id))
       .orderBy(desc(orders.createdAt))
   : [];
-
-function parseItems(json: string): CartLine[] {
-  try {
-    const o = JSON.parse(json) as { items?: CartLine[] };
-    return Array.isArray(o.items) ? o.items : [];
-  } catch {
-    return [];
-  }
-}
 
 const title = 'Admin — Commandes | FlexPad';
 ---
@@ -61,11 +51,12 @@ const title = 'Admin — Commandes | FlexPad';
                 <th>Client</th>
                 <th>Total</th>
                 <th>Statut</th>
+                <th>Détail</th>
               </tr>
             </thead>
             <tbody>
               {rows.map(({ order: o, customerEmail, customerName }) => {
-                const items = parseItems(o.cartJson);
+                const items = parseOrderCartLines(o.cartJson);
                 const qty = items.reduce((n, i) => n + (i.quantity ?? 0), 0);
                 return (
                   <tr data-order-id={o.id}>
@@ -104,7 +95,11 @@ const title = 'Admin — Commandes | FlexPad';
                         <option value="processing" selected={o.status === 'processing'}>En traitement</option>
                         <option value="shipped" selected={o.status === 'shipped'}>Expédiée</option>
                         <option value="cancelled" selected={o.status === 'cancelled'}>Annulée</option>
+                        <option value="refunded" selected={o.status === 'refunded'}>Remboursée</option>
                       </select>
+                    </td>
+                    <td>
+                      <a class="btn-secondary btn-sm" href={`/dashboard/admin/orders/${o.id}/`}>Détails</a>
                     </td>
                   </tr>
                 );

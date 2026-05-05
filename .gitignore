@@ -105,3 +105,6 @@ dist/server/pages/login.astro.mjs
 dist/server/pages/product.astro.mjs
 dist/server/renderers.mjs
 dist/styles/global.css
+
+.vercel
+.env*.local

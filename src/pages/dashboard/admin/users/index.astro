@@ -41,8 +41,61 @@ const title = 'Admin — Utilisateurs | FlexPad';
             </tbody>
           </table>
         </div>
-        <p class="dashboard-note">Promouvoir un compte en admin : mettre à jour la colonne <code>role</code> à <code>admin</code> en base (puis reconnecter).</p>
       </div>
+      <div class="dashboard-card reveal visible admin-promote-card">
+          <h2 class="dashboard-card__title">Rôle admin pour un compte existant</h2>
+          <p class="dashboard-note">
+            Le compte doit déjà exister (inscription sur <a href="/login">/login</a> ou{' '}
+            <code>pnpm db:seed</code>). Ensuite, entre son courriel et choisis le rôle.
+          </p>
+          <form class="admin-promote-form" id="admin-promote-form">
+            <label>
+              Courriel
+              <input type="email" name="email" required class="form-control-like" placeholder="utilisateur@exemple.com" autocomplete="off" />
+            </label>
+            <label>
+              Rôle
+              <select name="role" class="form-control-like">
+                <option value="admin">Admin</option>
+                <option value="user">Client</option>
+              </select>
+            </label>
+            <button type="submit" class="btn-primary btn-sm">Mettre à jour le rôle</button>
+          </form>
+          <p class="dashboard-note">
+            Première admin en local / Neon : par défaut{' '}
+            <code>admin@flexpad.local</code> / <code>flexpad-admin</code> après{' '}
+            <code>pnpm db:seed</code> (voir <code>.env.example</code> pour personnaliser).
+          </p>
+        </div>
     </DashboardChrome>
   </div>
 </Layout>
+
+<script>
+  document.getElementById('admin-promote-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    const fd = new FormData(form);
+    const email = String(fd.get('email') || '').trim();
+    const role = String(fd.get('role') || 'user');
+    try {
+      const res = await fetch('/api/admin/promote-user', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, role }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(j.error || 'Échec');
+        return;
+      }
+      alert('Rôle mis à jour. L’utilisateur doit se déconnecter et se reconnecter.');
+      location.reload();
+    } catch {
+      alert('Erreur réseau');
+    }
+  });
+</script>

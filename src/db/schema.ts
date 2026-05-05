@@ -21,7 +21,7 @@ export const orders = pgTable('orders', {
     .notNull()
     .references(() => users.id),
   reference: text('reference').notNull(),
-  /** confirmed | processing | shipped | cancelled */
+  /** confirmed | processing | shipped | cancelled | refunded */
   status: text('status').notNull().default('confirmed'),
   cartJson: text('cart_json').notNull(),
   shippingJson: text('shipping_json'),
@@ -29,6 +29,8 @@ export const orders = pgTable('orders', {
   tpsCents: integer('tps_cents').notNull(),
   tvqCents: integer('tvq_cents').notNull(),
   totalCents: integer('total_cents').notNull(),
+  /** Remboursements Stripe cumulés (centimes) ; statut `refunded` quand remboursement complet. */
+  refundedCents: integer('refunded_cents').notNull().default(0),
   stripeCheckoutSessionId: text('stripe_checkout_session_id'),
   stripePaymentIntentId: text('stripe_payment_intent_id'),
   paidAt: timestamp('paid_at', { mode: 'date' }),

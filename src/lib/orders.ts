@@ -14,6 +14,27 @@ export type NormalizedCart = {
   subtotalCents: number;
 };
 
+/** Extrait les lignes depuis `cart_json` (tableau JSON ou ancien format `{ items: [...] }`). */
+export function parseOrderCartLines(cartJson: string): CartLine[] {
+  try {
+    const parsed = JSON.parse(cartJson) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (row): row is CartLine =>
+          Boolean(row) &&
+          typeof row === 'object' &&
+          typeof (row as CartLine).id === 'string',
+      ) as CartLine[];
+    }
+    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { items?: unknown }).items)) {
+      return parseOrderCartLines(JSON.stringify((parsed as { items: CartLine[] }).items));
+    }
+  } catch {
+    /* ignore */
+  }
+  return [];
+}
+
 export function normalizeCartPayload(cart: unknown): NormalizedCart | null {
   if (!cart || typeof cart !== 'object') return null;
   const itemsRaw = (cart as { items?: unknown }).items;
@@ -69,10 +90,33 @@ export function formatCadFromCents(cents: number): string {
   }).format(cents / 100);
 }
 
-const STATUS = ['confirmed', 'processing', 'shipped', 'cancelled'] as const;
+const STATUS = ['confirmed', 'processing', 'shipped', 'cancelled', 'refunded'] as const;
 export type OrderStatus = (typeof STATUS)[number];
 
 export function parseOrderStatus(raw: string | undefined): OrderStatus | null {
   if (!raw) return null;
   return STATUS.includes(raw as OrderStatus) ? (raw as OrderStatus) : null;
+}
+
+/** Libellé UI français pour le statut commande */
+export function orderStatusLabelFr(s: string): string {
+  const m: Record<string, string> = {
+    confirmed: 'Confirmée',
+    processing: 'En traitement',
+    shipped: 'Expédiée',
+    cancelled: 'Annulée',
+    refunded: 'Remboursée',
+  };
+  return m[s] ?? s;
+}
+
+export function parseOrderShipping(json: string | null | undefined): Record<string, string> | null {
+  if (!json || typeof json !== 'string') return null;
+  try {
+    const o = JSON.parse(json) as unknown;
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    return o as Record<string, string>;
+  } catch {
+    return null;
+  }
 }

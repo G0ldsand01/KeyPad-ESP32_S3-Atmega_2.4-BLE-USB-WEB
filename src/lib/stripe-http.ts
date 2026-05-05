@@ -74,6 +74,18 @@ export async function stripePost<T = unknown>(
   return json as T;
 }
 
+/** Remboursement complet du PaymentIntent (Stripe). */
+export async function stripeCreateRefundForPaymentIntent(
+  paymentIntentId: string,
+  opts: StripeRequestOptions = {},
+): Promise<{ id: string; status?: string; amount?: number }> {
+  return stripePost<{ id: string; status?: string; amount?: number }>(
+    '/v1/refunds',
+    { payment_intent: paymentIntentId },
+    opts,
+  );
+}
+
 /**
  * Vérifie la signature Stripe sans dépendance externe.
  * Stripe-Signature: t=...,v1=...,v0=...

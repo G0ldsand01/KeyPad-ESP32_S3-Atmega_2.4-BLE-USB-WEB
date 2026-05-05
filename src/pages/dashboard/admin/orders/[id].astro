@@ -1,0 +1,311 @@
+---
+import Layout from '../../../../layouts/Layout.astro';
+import DashboardChrome from '../../../../components/DashboardChrome.astro';
+import { getSession } from 'auth-astro/server';
+import { eq } from 'drizzle-orm';
+import { db } from '../../../../db';
+import { orders, users } from '../../../../db/schema';
+import {
+  formatCadFromCents,
+  parseOrderCartLines,
+  parseOrderShipping,
+  orderStatusLabelFr,
+} from '../../../../lib/orders';
+
+export const prerender = false;
+
+const session = await getSession(Astro.request);
+if (!session?.user || session.user.role !== 'admin') {
+  return Astro.redirect('/dashboard');
+}
+
+const id = Astro.params.id;
+if (!id) {
+  return Astro.redirect('/dashboard/admin/orders');
+}
+
+const dbEnabled = Boolean(import.meta.env.DATABASE_URL);
+const [row] = dbEnabled
+  ? await db
+      .select({
+        order: orders,
+        customerEmail: users.email,
+        customerName: users.name,
+      })
+      .from(orders)
+      .leftJoin(users, eq(orders.userId, users.id))
+      .where(eq(orders.id, id))
+      .limit(1)
+  : [];
+
+if (!row) {
+  return Astro.redirect('/dashboard/admin/orders');
+}
+
+const { order, customerEmail, customerName } = row;
+const items = parseOrderCartLines(order.cartJson);
+const shipping = parseOrderShipping(order.shippingJson);
+const contactEmail = customerEmail ?? shipping?.email ?? '';
+const mailSubject = encodeURIComponent(`Commande FlexPad ${order.reference}`);
+const mailBody = encodeURIComponent(
+  `Bonjour,\n\n concernant votre commande ${order.reference}.\n\n— L’équipe FlexPad`,
+);
+const mailto =
+  contactEmail && contactEmail.includes('@')
+    ? `mailto:${contactEmail}?subject=${mailSubject}&body=${mailBody}`
+    : '';
+
+const title = `Admin — ${order.reference} | FlexPad`;
+const canRefund =
+  Boolean(order.stripePaymentIntentId?.trim()) &&
+  order.refundedCents < order.totalCents &&
+  order.status !== 'refunded';
+const fullyRefunded = order.refundedCents >= order.totalCents && order.totalCents > 0;
+---
+
+<Layout {title} site>
+  <div class="page-content dashboard-page dashboard-page--chrome">
+    <DashboardChrome
+      variant="admin"
+      title={`Commande ${order.reference}`}
+      subtitle="Client, articles, actions (annulation, remboursement Stripe, courriel)."
+      userName={session.user.name ?? session.user.email ?? 'Admin'}
+      userEmail={session.user.email ?? ''}
+      isAdmin={true}
+    >
+      <div class="order-detail">
+        <p class="order-detail__back">
+          <a href="/dashboard/admin/orders/">← Toutes les commandes</a>
+        </p>
+
+        <div class="dashboard-card reveal visible order-detail__card admin-order-detail">
+          <header class="order-detail__head">
+            <div>
+              <h2 class="dashboard-card__title">{order.reference}</h2>
+              <p class="dashboard-note">
+                Créée :{' '}
+                {order.createdAt ? new Date(order.createdAt).toLocaleString('fr-CA') : '—'}
+                {order.paidAt && (
+                  <>
+                    {' '}
+                    · Payée : {new Date(order.paidAt).toLocaleString('fr-CA')}
+                  </>
+                )}
+              </p>
+            </div>
+            <span class={`dash-status dash-status--${order.status}`}>{orderStatusLabelFr(order.status)}</span>
+          </header>
+
+          <section class="order-detail__section admin-order-detail__client">
+            <h3 class="order-detail__h">Client</h3>
+            <dl class="order-detail__dl">
+              <dt>Nom</dt>
+              <dd>{customerName ?? '—'}</dd>
+              <dt>Courriel (compte)</dt>
+              <dd>
+                {customerEmail ? <a href={`mailto:${customerEmail}`}>{customerEmail}</a> : '—'}
+              </dd>
+              <dt>ID utilisateur</dt>
+              <dd>
+                <code>{order.userId}</code>
+              </dd>
+            </dl>
+            <div class="admin-order-detail__actions-row">
+              {mailto ? (
+                <a class="btn-primary btn-sm" href={mailto}>Contacter par courriel</a>
+              ) : (
+                <span class="dashboard-note">Aucun courriel client / livraison pour l’envoi direct.</span>
+              )}
+            </div>
+          </section>
+
+          <section class="order-detail__section">
+            <h3 class="order-detail__h">Articles</h3>
+            {items.length === 0 ? (
+              <p class="dashboard-note">Aucune ligne.</p>
+            ) : (
+              <ul class="order-detail__lines">
+                {items.map((item, idx) => (
+                  <li>
+                    <div class="order-detail__line-main">
+                      <strong>{item.name ?? `Article ${idx + 1}`}</strong>
+                      {item.tagline && <span class="order-detail__tag">{item.tagline}</span>}
+                    </div>
+                    <span>Qté {item.quantity ?? 0}</span>
+                    <span class="order-detail__line-price">
+                      {formatCadFromCents(Math.round((item.price ?? 0) * (item.quantity ?? 0) * 100))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section class="order-detail__section">
+            <h3 class="order-detail__h">Livraison (formulaire checkout)</h3>
+            {!shipping || Object.keys(shipping).length === 0 ? (
+              <p class="dashboard-note">Aucune adresse.</p>
+            ) : (
+              <ul class="order-detail__kv">
+                {Object.entries(shipping)
+                  .filter(([, v]) => Boolean(v))
+                  .map(([k, v]) => (
+                    <li>
+                      <strong>{k}</strong> {v}
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </section>
+
+          <section class="order-detail__section">
+            <h3 class="order-detail__h">Montants</h3>
+            <ul class="order-detail__totals">
+              <li>
+                <span>Sous-total</span>
+                <span>{formatCadFromCents(order.subtotalCents)}</span>
+              </li>
+              <li>
+                <span>TPS</span>
+                <span>{formatCadFromCents(order.tpsCents)}</span>
+              </li>
+              <li>
+                <span>TVQ</span>
+                <span>{formatCadFromCents(order.tvqCents)}</span>
+              </li>
+              <li class="order-detail__totals--grand">
+                <span>Total</span>
+                <span>{formatCadFromCents(order.totalCents)}</span>
+              </li>
+              {(order.refundedCents > 0 || fullyRefunded) && (
+                <li class="order-detail__totals--refund">
+                  <span>Remboursé (enreg.)</span>
+                  <span>{formatCadFromCents(order.refundedCents)}</span>
+                </li>
+              )}
+            </ul>
+          </section>
+
+          {(order.stripePaymentIntentId || order.stripeCheckoutSessionId) && (
+            <section class="order-detail__section">
+              <h3 class="order-detail__h">Stripe</h3>
+              <ul class="dashboard-note order-detail__stripe">
+                {order.stripePaymentIntentId && (
+                  <li>
+                    PI : <code>{order.stripePaymentIntentId}</code>
+                  </li>
+                )}
+                {order.stripeCheckoutSessionId && (
+                  <li>
+                    Checkout : <code>{order.stripeCheckoutSessionId}</code>
+                  </li>
+                )}
+              </ul>
+            </section>
+          )}
+
+          <section class="order-detail__section admin-order-detail__ops">
+            <h3 class="order-detail__h">Statut &amp; actions</h3>
+            <p class="dashboard-note">
+              <strong>Annuler</strong> met à jour le statut en base (logistique). Pour un paiement capturé, utilise
+              <strong> Rembourser</strong> via Stripe.
+            </p>
+            <div class="admin-order-detail__toolbar">
+              <label class="admin-order-detail__status-wrap">
+                Statut
+                <select
+                  class="admin-order-status form-control-like"
+                  id="admin-order-detail-status"
+                  data-order-id={order.id}
+                  aria-label="Statut commande"
+                >
+                  <option value="confirmed" selected={order.status === 'confirmed'}>Confirmée</option>
+                  <option value="processing" selected={order.status === 'processing'}>En traitement</option>
+                  <option value="shipped" selected={order.status === 'shipped'}>Expédiée</option>
+                  <option value="cancelled" selected={order.status === 'cancelled'}>Annulée</option>
+                  <option value="refunded" selected={order.status === 'refunded'}>Remboursée</option>
+                </select>
+              </label>
+              <button type="button" class="btn-secondary btn-sm" id="admin-order-save-status">Enregistrer le statut</button>
+            </div>
+            <div class="admin-order-detail__toolbar">
+              <button
+                type="button"
+                class="btn-danger btn-sm"
+                id="admin-order-refund-btn"
+                data-order-id={order.id}
+                disabled={!canRefund}
+                title={!canRefund ? 'Remboursement impossible (déjà remboursé ou pas de PI)' : ''}
+              >
+                Rembourser via Stripe
+              </button>
+            </div>
+            {!order.stripePaymentIntentId && (
+              <p class="dashboard-note">Aucun PaymentIntent : remboursement Stripe indisponible tant que le webhook n’a pas lié le paiement.</p>
+            )}
+          </section>
+        </div>
+      </div>
+    </DashboardChrome>
+  </div>
+</Layout>
+
+<script>
+  const orderId = document.getElementById('admin-order-refund-btn')?.getAttribute('data-order-id');
+  const sel = document.getElementById('admin-order-detail-status');
+  const saveBtn = document.getElementById('admin-order-save-status');
+  const refundBtn = document.getElementById('admin-order-refund-btn');
+
+  saveBtn?.addEventListener('click', async () => {
+    if (!sel || !orderId) return;
+    const status = sel.value;
+    try {
+      const res = await fetch('/api/admin/order-status', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId, status }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(j.error || 'Mise à jour impossible');
+        return;
+      }
+      alert('Statut mis à jour.');
+      location.reload();
+    } catch {
+      alert('Erreur réseau');
+    }
+  });
+
+  refundBtn?.addEventListener('click', async () => {
+    if (!orderId || refundBtn.disabled) return;
+    if (
+      !confirm(
+        'Rembourser le paiement Stripe pour cette commande ? Le montant total sera reversé au client (comportement Stripe).',
+      )
+    ) {
+      return;
+    }
+    refundBtn.disabled = true;
+    try {
+      const res = await fetch('/api/admin/order-refund', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(j.error || 'Remboursement refusé');
+        refundBtn.disabled = false;
+        return;
+      }
+      alert('Remboursement Stripe lancé : ' + (j.refundId || '') + '.');
+      location.reload();
+    } catch {
+      alert('Erreur réseau');
+      refundBtn.disabled = false;
+    }
+  });
+</script>
